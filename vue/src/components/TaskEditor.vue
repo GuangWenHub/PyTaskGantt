@@ -27,6 +27,7 @@
           <n-select
             v-model:value="form.tags"
             :options="tagOptions"
+            :render-label="renderTagLabel"
             placeholder="输入标签后回车"
             filterable
             multiple
@@ -109,7 +110,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import SchedulePicker from './SchedulePicker.vue'
-import { formatDuration, isCrossDay, normalizeTime } from '../services/dataService.js'
+import { formatDuration, getTaskFrequencyBadge, isCrossDay, normalizeTime } from '../services/dataService.js'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -155,6 +156,12 @@ watch(() => [props.show, props.task], () => {
 const modalTitle = computed(() => props.mode === 'create' ? '新增任务' : '编辑任务')
 const botOptions = computed(() => [...new Set([...props.allBots, form.bot].filter(Boolean))].map(value => ({ label: value, value })))
 const tagOptions = computed(() => [...new Set([...props.allTags, ...form.tags])].map(value => ({ label: value, value })))
+// 下拉选项里给周期标签加上对应 emoji 前缀（☀每日 ⭐每周 🌙每月），
+// 只改下拉显示：用 render-label 而不是改 label，选中后的标签片保持纯文字
+const renderTagLabel = (option) => {
+  const { badge } = getTaskFrequencyBadge([option.value])
+  return badge ? `${badge} ${option.label}` : option.label
+}
 const isCrossDayTask = computed(() => form.start && form.finish && isCrossDay(form.start, form.finish))
 const durationText = computed(() => formatDuration(form.start, form.finish))
 

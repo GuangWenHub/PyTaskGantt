@@ -5,7 +5,7 @@
         <div style="display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600;">
           <span>任务执行甘特图</span>
         </div>
-        <div class="gantt-caption">按住 Ctrl + 鼠标滚轮可缩放，拖拽 item 可调整时间</div>
+        <div class="gantt-caption">按住 Ctrl + 鼠标滚轮可缩放，拖拽任务条可调整时间；点选/拖选顶部时间轴可冻结区间（Esc 或双击本标题栏解除）</div>
       </div>
     </template>
     <template #header-extra>
@@ -69,6 +69,7 @@ import { NCard, NSpace, NButton, NEmpty } from 'naive-ui'
 import {
   parseTimeToDate,
   getBotColor,
+  getTaskFrequencyBadge,
   DUMMY_DATE,
   isCrossDay,
   formatDuration,
@@ -119,6 +120,220 @@ const dragTip = ref({
 let lastClientX = 0
 let lastClientY = 0
 
+// ===== 时间轴冻结 / 高亮 =====
+// 触发区域仅限顶部时间轴刻度栏（.vis-time-axis）：
+//   - 两次单击：第一次定冻结开始，第二次定冻结结束（开始晚于结束则自动交换）
+//   - 按住拖动：拖选冻结区间，实时预览
+// 解冻：点击甘特图外区域 / 按 Esc
+// 冻结期间：禁背景横向平移（moveable=false）、autoScroll 挂起、数据刷新保持垂直滚动位
+const freezeBand = ref(null) // 已定稿区间 { start: Date, end: Date }，null=未冻结
+let pendingClickStart = null // 第一次单击记下的起点（Date），等待第二次单击
+let previewBand = null       // 拖选/待确认时的预览区间 { start: Date, end: Date }
+let axisGesture = null       // 时间轴手势 { downTime: Date, dragging: boolean }
+const FREEZE_BAND_ID = 'freeze-band'
+
+// 时间轴元素（顶部刻度栏），clientX↔时间映射、刻度遍历都基于它的几何范围
+// 注意必须用它而不是 containerRef：左侧 220px 标签栏不算在时间范围内
+function getAxisEl() {
+  if (!containerRef.value) return null
+  return containerRef.value.querySelector('.vis-panel.vis-top .vis-time-axis')
+    || containerRef.value.querySelector('.vis-time-axis')
+}
+
+// 屏幕 clientX → 虚拟时间：按刻度栏自身的 left/width 线性插值
+function clientXToTime(clientX) {
+  const axis = getAxisEl()
+  if (!timeline || !axis) return null
+  const rect = axis.getBoundingClientRect()
+  if (!rect.width) return null
+  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  const win = timeline.getWindow()
+  return new Date(win.start.getTime() + ratio * (win.end.getTime() - win.start.getTime()))
+}
+
+// 当前应显示的区间（优先定稿，其次预览）
+function currentBand() {
+  return freezeBand.value || previewBand
+}
+
+// —— 时间轴上的高亮层 ——
+// 不走 vis 的刻度 DOM（重绘时会被回收复用，且 vis 没有 redraw 事件），
+// 而是往 .vis-panel.vis-top 里 append 我们自己的绝对定位覆盖层，按视窗百分比定位，
+// vis 重绘不会动它；视窗变化时靠 rangechange/rangechanged 事件重算位置。
+let axisOverlayEl = null     // 覆盖整个时间轴的容器
+let axisOverlayBandEl = null // 高亮块（冻结区间）
+let cardHeaderEl = null      // n-card 头部元素（双击解冻用）
+
+function ensureAxisOverlay() {
+  if (axisOverlayEl || !containerRef.value) return
+  const topPanel = containerRef.value.querySelector('.vis-panel.vis-top')
+  if (!topPanel) return
+  axisOverlayEl = document.createElement('div')
+  axisOverlayEl.className = 'freeze-axis-overlay'
+  axisOverlayBandEl = document.createElement('div')
+  axisOverlayBandEl.className = 'freeze-axis-band'
+  axisOverlayEl.appendChild(axisOverlayBandEl)
+  topPanel.appendChild(axisOverlayEl)
+}
+
+function updateAxisOverlay() {
+  ensureAxisOverlay()
+  if (!axisOverlayEl || !axisOverlayBandEl || !timeline || !containerRef.value) return
+  const band = currentBand()
+  if (!band) {
+    axisOverlayBandEl.style.display = 'none'
+    return
+  }
+  axisOverlayBandEl.classList.toggle('freeze-preview', !freezeBand.value)
+  // 直接镜像图表区冻结带的实际渲染位置，保证时间轴高亮和图表色带的虚线严格对齐。
+  // （不能按"视窗百分比 × 顶部面板宽"换算：vis 内部换算基准是 center 面板宽，
+  //   垂直滚动条等因素会让两个宽度不一致，越靠右偏差越大）
+  const apply = () => {
+    if (!containerRef.value || !axisOverlayBandEl) return
+    const bandEl = containerRef.value.querySelector('.vis-item.freeze-band')
+    const topPanel = containerRef.value.querySelector('.vis-panel.vis-top')
+    if (!bandEl || !topPanel) {
+      axisOverlayBandEl.style.display = 'none'
+      return
+    }
+    const b = bandEl.getBoundingClientRect()
+    const t = topPanel.getBoundingClientRect()
+    axisOverlayBandEl.style.display = 'block'
+    axisOverlayBandEl.style.left = `${b.left - t.left}px`
+    axisOverlayBandEl.style.width = `${Math.max(b.width, 2)}px`
+  }
+  // vis 的数据更新/视窗变化是 rAF 节流重绘的，等它画完再量；保险起见量两帧
+  requestAnimationFrame(() => {
+    apply()
+    requestAnimationFrame(apply)
+  })
+}
+
+// —— 冻结点的竖线标记（vis 官方 custom time marker，贯穿整个图表区） ——
+const PENDING_MARKER_ID = 'freeze-pending'
+
+function renderPendingMarker() {
+  if (!timeline) return
+  try { timeline.removeCustomTime(PENDING_MARKER_ID) } catch { /* 不存在则忽略 */ }
+  // 两种情况显示竖线：第一次单击后的待定锚点 / 已定稿的零宽点冻结
+  const fb = freezeBand.value
+  const pointTime = pendingClickStart || (fb && fb.start.getTime() === fb.end.getTime() ? fb.start : null)
+  if (pointTime) timeline.addCustomTime(pointTime, PENDING_MARKER_ID)
+}
+
+// 写入/更新/移除冻结带 background item（定稿与预览用不同 className 区分样式）
+function renderBandItem() {
+  if (!itemsDataset) return
+  const band = currentBand()
+  if (!band) {
+    try { itemsDataset.remove(FREEZE_BAND_ID) } catch { /* 已删 */ }
+    updateAxisOverlay()
+    return
+  }
+  const s = band.start.getTime() <= band.end.getTime() ? band.start : band.end
+  const e = band.start.getTime() <= band.end.getTime() ? band.end : band.start
+  const item = {
+    id: FREEZE_BAND_ID,
+    start: s,
+    end: e,
+    type: 'background',
+    className: freezeBand.value ? 'freeze-band' : 'freeze-band freeze-preview',
+  }
+  if (itemsDataset.get(FREEZE_BAND_ID)) itemsDataset.update(item)
+  else itemsDataset.add(item)
+  updateAxisOverlay()
+}
+
+// 冻结定稿：记录区间并锁横向平移
+function applyFreeze(start, end) {
+  const s = start.getTime() <= end.getTime() ? start : end
+  const e = start.getTime() <= end.getTime() ? end : start
+  freezeBand.value = { start: s, end: e }
+  previewBand = null
+  pendingClickStart = null
+  timeline?.setOptions({ moveable: false })
+  renderBandItem()
+  renderPendingMarker()
+}
+
+// 解冻 / 清除待定状态：恢复背景平移
+function unfreeze() {
+  freezeBand.value = null
+  previewBand = null
+  pendingClickStart = null
+  axisGesture = null
+  timeline?.setOptions({ moveable: true })
+  renderBandItem()
+  renderPendingMarker()
+}
+
+// —— 手势处理 ——
+// capture 阶段捕获时间轴上的 pointerdown：stopPropagation 让 vis 内部 hammer 收不到该手势，
+// 避免拖选区间时同时触发背景平移
+function onAxisPointerDown(e) {
+  if (!timeline || !containerRef.value) return
+  if (!e.target.closest('.vis-time-axis')) return
+  const time = clientXToTime(e.clientX)
+  if (!time) return
+  e.preventDefault()
+  e.stopPropagation()
+  axisGesture = { downTime: time, dragging: false }
+}
+
+function onAxisPointerMove(e) {
+  if (!axisGesture) return
+  const time = clientXToTime(e.clientX)
+  if (!time) return
+  if (!axisGesture.dragging) {
+    // 位移超过 30 秒才判定为拖动，否则视为单击
+    if (Math.abs(time.getTime() - axisGesture.downTime.getTime()) < 30000) return
+    axisGesture.dragging = true
+    // 拖动视为重新选区：清掉已有点冻结/待定锚点，让预览生效
+    freezeBand.value = null
+    pendingClickStart = null
+    renderPendingMarker()
+  }
+  previewBand = { start: axisGesture.downTime, end: time }
+  renderBandItem()
+}
+
+function onAxisPointerUp(e) {
+  if (!axisGesture) return
+  const gesture = axisGesture
+  axisGesture = null
+  const time = clientXToTime(e.clientX) || gesture.downTime
+  if (gesture.dragging) {
+    applyFreeze(gesture.downTime, time)
+    return
+  }
+  // 单击逻辑：
+  //   - 已有区间冻结 → 忽略（解冻走 Esc / 双击卡片标题栏）
+  //   - 已有点冻结（锚点还在）→ 本次单击把点扩展为区间（先后自动交换）
+  //   - 否则 → 冻结该时间点：竖线标记 + 视图锁定，记下锚点等待可能的第二次单击
+  const fb = freezeBand.value
+  if (fb && fb.start.getTime() !== fb.end.getTime()) return
+  if (fb && pendingClickStart) {
+    applyFreeze(pendingClickStart, time)
+    return
+  }
+  applyFreeze(time, time)
+  pendingClickStart = time
+  renderPendingMarker()
+}
+
+function onFreezeKeyDown(e) {
+  if (e.key !== 'Escape') return
+  if (!freezeBand.value && !previewBand && !pendingClickStart) return
+  e.stopPropagation()
+  unfreeze()
+}
+
+// 双击甘特图卡片头部（n-card-header）→ 解冻
+function onHeaderDblClick() {
+  if (!currentBand() && !pendingClickStart) return
+  unfreeze()
+}
+
 // 鼠标移动始终更新坐标（即使 visible=false 也更新，避免显示瞬间 tooltip 出现在 (0,0)）
 // 关键：用 pointermove + capture phase 监听
 // 原因：vis-timeline 内部的 hammer.js 拖拽时会对元素 setPointerCapture，
@@ -159,7 +374,8 @@ function advanceDragBaseline(move) {
 }
 
 function tickAutoScroll() {
-  if (!isDragging || !timeline || !containerRef.value) {
+  // 冻结期间挂起 autoScroll：拖任务到边缘不再平移视窗，避免时间轴跑偏
+  if (!isDragging || !timeline || !containerRef.value || freezeBand.value) {
     autoScrollRaf = null
     return
   }
@@ -326,14 +542,19 @@ const dynamicStyles = computed(() => {
 function buildItems(tasks) {
   return tasks.map(t => {
     const { start, end } = parseTimeToDate(t.start, t.finish)
+    const freq = getTaskFrequencyBadge(t.tags)
+    const classes = [botClassName(t.bot)]
+    // 历史任务保持 task-locked（最淡）；仅含周/月的非历史任务淡化（浓于历史任务）
+    if (!t.can_edit) classes.push('task-locked')
+    else if (freq.faded) classes.push('freq-faded')
     return {
       id: t.id,
       group: t.id, // 每个任务独占一个 group → 一行
-      content: '', // 任务条上不显示文字；时长改在 hover tooltip 显示
+      content: freq.badge ? `<span class="freq-badge">${freq.badge}</span>` : '', // 左侧周期 emoji
       start,
       end,
       editable: t.can_edit ? { updateTime: true, updateGroup: false, remove: false } : false,
-      className: `${botClassName(t.bot)}${t.can_edit ? '' : ' task-locked'}`,
+      className: classes.join(' '),
       _raw: t,
     }
   })
@@ -444,6 +665,11 @@ function createTimeline() {
 
   timeline = new Timeline(containerRef.value, itemsDataset, groupsDataset, options)
 
+  // 视窗变化（缩放/平移）后按新区间重算时间轴高亮层位置
+  // 注意：vis-timeline 没有 redraw 事件，rangechange/rangechanged 是公开 API 里覆盖视窗变化的事件
+  timeline.on('rangechange', () => updateAxisOverlay())
+  timeline.on('rangechanged', () => updateAxisOverlay())
+
   // 单击：触发编辑
   timeline.on('click', props_evt => {
     if (justDragged) return // 刚结束拖拽的 click 是误触，不弹编辑器
@@ -504,8 +730,14 @@ function syncDataset(dataset, nextRows) {
 
 function updateData() {
   if (!timeline || !itemsDataset || !groupsDataset) return
+  // 保存垂直滚动位：syncDataset 重建行后 vis 会回顶，这里恢复，避免轮询刷新跳到顶部
+  const itemset = containerRef.value?.querySelector('.vis-itemset')
+  const savedTop = itemset ? itemset.scrollTop : null
   syncDataset(groupsDataset, buildGroups(props.tasks))
   syncDataset(itemsDataset, buildItems(props.tasks))
+  // syncDataset 会把不在 buildItems 里的冻结带删掉，这里按当前状态补回/清除
+  renderBandItem()
+  if (savedTop != null && itemset) itemset.scrollTop = savedTop
 }
 
 function fitTimeline() {
@@ -563,6 +795,16 @@ onMounted(() => {
   window.addEventListener('pointerup', hideDragTip, { capture: true })
   window.addEventListener('mouseup', hideDragTip, { capture: true })
   window.addEventListener('blur', hideDragTip)
+  // 时间轴冻结：capture 捕获刻度栏 pointerdown + window 级 move/up + Esc/双击卡片头解冻
+  if (containerRef.value) {
+    containerRef.value.addEventListener('pointerdown', onAxisPointerDown, { capture: true })
+    // 组件根是 n-card，取它渲染出的 .n-card-header 监听双击
+    cardHeaderEl = containerRef.value.closest('.n-card')?.querySelector('.n-card-header') || null
+    cardHeaderEl?.addEventListener('dblclick', onHeaderDblClick)
+  }
+  window.addEventListener('pointermove', onAxisPointerMove, { passive: true })
+  window.addEventListener('pointerup', onAxisPointerUp)
+  window.addEventListener('keydown', onFreezeKeyDown)
 })
 
 function hideDragTip() {
@@ -576,6 +818,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', hideDragTip, { capture: true })
   window.removeEventListener('mouseup', hideDragTip, { capture: true })
   window.removeEventListener('blur', hideDragTip)
+  if (containerRef.value) {
+    containerRef.value.removeEventListener('pointerdown', onAxisPointerDown, { capture: true })
+  }
+  cardHeaderEl?.removeEventListener('dblclick', onHeaderDblClick)
+  cardHeaderEl = null
+  window.removeEventListener('pointermove', onAxisPointerMove, { passive: true })
+  window.removeEventListener('pointerup', onAxisPointerUp)
+  window.removeEventListener('keydown', onFreezeKeyDown)
   window.removeEventListener('resize', resizeTimelineToViewport)
   window.removeEventListener('scroll', resizeTimelineOnScroll)
   window.visualViewport?.removeEventListener('resize', resizeTimelineToViewport)
@@ -588,6 +838,8 @@ onBeforeUnmount(() => {
     timeline.destroy()
     timeline = null
   }
+  axisOverlayEl = null
+  axisOverlayBandEl = null
 })
 </script>
 
@@ -718,5 +970,70 @@ onBeforeUnmount(() => {
    （不用 translateY(-50%)：vis-item 上的 transform 会被内部样式覆盖而失效。） */
 .vis-foreground .vis-item.vis-range {
   top: calc(50% - 10px) !important;
+}
+/* 周期 emoji：任务条左侧、垂直居中。
+   注意 vis 的 .vis-item.vis-range .vis-item-content 是 position:relative + padding:5px，
+   绝对定位会相对这个比任务条更高的内容盒居中（视觉上偏下）；
+   所以直接把内容盒改成 flex 满高 + align-items 居中，emoji 用静态定位 */
+.vis-item.vis-range .vis-item-content {
+  display: flex !important;
+  align-items: center !important;
+  height: 100% !important;
+  padding: 0 6px !important;
+}
+.vis-item .freq-badge {
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 1px;
+  pointer-events: none;
+  user-select: none;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+/* 仅含每周/每月（不含每日）的非历史任务淡化：opacity .78，介于历史任务(.58)和正常(1)之间 */
+.vis-item.freq-faded {
+  opacity: .78;
+}
+/* 时间轴冻结高亮带（图表区）：半透明色块 + 两侧虚线；零宽（单击第一次）时靠 border 显示竖线 */
+.vis-item.freeze-band {
+  background-color: rgba(22, 119, 255, 0.12) !important;
+  border-left: 2px dashed rgba(22, 119, 255, 0.7) !important;
+  border-right: 2px dashed rgba(22, 119, 255, 0.7) !important;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+/* 拖选/待定中的预览态：比定稿更淡 */
+.vis-item.freeze-band.freeze-preview {
+  background-color: rgba(22, 119, 255, 0.07) !important;
+  border-color: rgba(22, 119, 255, 0.45) !important;
+}
+/* 时间轴上的高亮覆盖层：我们自己的 DOM（append 到 .vis-panel.vis-top），
+   vis 重绘不会动它，位置按视窗百分比由 updateAxisOverlay 维护 */
+.vis-panel.vis-top .freeze-axis-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  overflow: hidden;
+}
+.freeze-axis-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: none;
+  background-color: rgba(22, 119, 255, 0.28);
+  border-left: 2px dashed rgba(22, 119, 255, 0.85);
+  border-right: 2px dashed rgba(22, 119, 255, 0.85);
+  box-sizing: border-box;
+}
+.freeze-axis-band.freeze-preview {
+  background-color: rgba(22, 119, 255, 0.14);
+  border-color: rgba(22, 119, 255, 0.5);
+}
+/* 第一次单击后的待定竖线（贯穿图表区）；禁 pointer-events 防止被用户拖动 */
+.vis-custom-time.freeze-pending {
+  background-color: rgba(22, 119, 255, 0.85) !important;
+  width: 2px !important;
+  pointer-events: none !important;
 }
 </style>
