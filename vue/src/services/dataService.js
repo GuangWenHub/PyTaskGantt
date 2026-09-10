@@ -81,12 +81,47 @@ export function createBotColorMap(botNames = []) {
   }))
 }
 
+// 任务周期 emoji：仅依据 tags 数组（子串匹配），不解析任务名。
+// 顺序固定 ☀️→⭐→🌙，不跟随 tags 数组顺序，保证同含义显示一致。
+// 返回 { badge: string, faded: boolean }
+//   badge: emoji 字符串（无匹配返回空串）
+//   faded: 是否淡化（仅含每周/每月、不含每日时为 true）
+const FREQ_RULES = [
+  { match: '每日', emoji: '☀️' },
+  { match: '每周', emoji: '⭐' },
+  { match: '每月', emoji: '🌙' },
+]
+
+export function getTaskFrequencyBadge(tags = []) {
+  if (!Array.isArray(tags) || !tags.length) return { badge: '', faded: false }
+  const joined = tags.map(t => String(t || '').trim()).filter(Boolean)
+  if (!joined.length) return { badge: '', faded: false }
+  const text = joined.join('|')
+  const emojis = []
+  let hasDaily = false
+  let hasWeeklyOrMonthly = false
+  for (const rule of FREQ_RULES) {
+    if (text.includes(rule.match)) {
+      emojis.push(rule.emoji)
+      if (rule.match === '每日') hasDaily = true
+      else hasWeeklyOrMonthly = true
+    }
+  }
+  return {
+    badge: emojis.join(''),
+    faded: !hasDaily && hasWeeklyOrMonthly,
+  }
+}
+
 export function decorateTask(task, color = getBotColor(task.bot)) {
+  const freq = getTaskFrequencyBadge(task.tags)
   return {
     ...task,
     duration: formatDuration(task.start, task.finish),
     color,
     crossDay: isCrossDay(task.start, task.finish),
+    freqBadge: freq.badge,
+    freqFaded: freq.faded,
   }
 }
 

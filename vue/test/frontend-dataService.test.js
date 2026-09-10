@@ -5,6 +5,7 @@ import {
   filterTasks,
   formatDuration,
   getBotColor,
+  getTaskFrequencyBadge,
   isCrossDay,
   parseTimeToDate,
   summarizeSyncCutoff,
@@ -60,5 +61,53 @@ describe('frontend data utilities', () => {
       timestamp: '2026-07-22T04:00:00.000Z',
       incomplete: true,
     })
+  })
+})
+
+describe('getTaskFrequencyBadge 任务周期 emoji', () => {
+  it('单一周期：每日 ☀️', () => {
+    expect(getTaskFrequencyBadge(['每日'])).toEqual({ badge: '☀️', faded: false })
+  })
+  it('单一周期：每周（不分周几）⭐', () => {
+    expect(getTaskFrequencyBadge(['每周'])).toEqual({ badge: '⭐', faded: true })
+    expect(getTaskFrequencyBadge(['每周五'])).toEqual({ badge: '⭐', faded: true })
+    expect(getTaskFrequencyBadge(['每周一'])).toEqual({ badge: '⭐', faded: true })
+  })
+  it('单一周期：每月 🌙', () => {
+    expect(getTaskFrequencyBadge(['每月'])).toEqual({ badge: '🌙', faded: true })
+  })
+  it('多标签：每日+每月 → ☀️🌙，含每日不淡化', () => {
+    expect(getTaskFrequencyBadge(['每日', '每月'])).toEqual({ badge: '☀️🌙', faded: false })
+  })
+  it('多标签：每周+每月 → ⭐🌙，无每日则淡化', () => {
+    expect(getTaskFrequencyBadge(['每周', '每月'])).toEqual({ badge: '⭐🌙', faded: true })
+  })
+  it('三标签：每日+每周+每月 → ☀️⭐🌙，顺序固定', () => {
+    expect(getTaskFrequencyBadge(['每日', '每周', '每月'])).toEqual({ badge: '☀️⭐🌙', faded: false })
+  })
+  it('顺序不跟随 tags 数组：[每月,每日] 仍输出 ☀️🌙', () => {
+    expect(getTaskFrequencyBadge(['每月', '每日'])).toEqual({ badge: '☀️🌙', faded: false })
+  })
+  it('无周期标签 → 空串，不淡化', () => {
+    expect(getTaskFrequencyBadge(['其他标签'])).toEqual({ badge: '', faded: false })
+  })
+  it('空数组 / 非数组入参 → 空串，不淡化', () => {
+    expect(getTaskFrequencyBadge([])).toEqual({ badge: '', faded: false })
+    expect(getTaskFrequencyBadge(undefined)).toEqual({ badge: '', faded: false })
+    expect(getTaskFrequencyBadge(null)).toEqual({ badge: '', faded: false })
+  })
+  it('不误匹配英文关键词', () => {
+    expect(getTaskFrequencyBadge(['daily'])).toEqual({ badge: '', faded: false })
+    expect(getTaskFrequencyBadge(['weekly', 'monthly'])).toEqual({ badge: '', faded: false })
+  })
+  it('含空串/空白的 tags 被过滤后判定', () => {
+    expect(getTaskFrequencyBadge(['', '每日', '  '])).toEqual({ badge: '☀️', faded: false })
+  })
+  it('decorateTask 把周期标记挂到任务上', () => {
+    const [row] = filterTasks([
+      { id: '1', task: '周报', start: '09:00:00', finish: '10:00:00', bot: 'A', tags: ['每周五'] },
+    ])
+    expect(row.freqBadge).toBe('⭐')
+    expect(row.freqFaded).toBe(true)
   })
 })
