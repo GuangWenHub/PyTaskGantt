@@ -92,6 +92,7 @@ let containerResizeObserver = null
 let resizeRaf = null
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
+const REFERENCE_TIME_ID = 'schedule-reference'
 // 拖拽自身触发的 task-update 会导致父组件 allTasks 变化 → 触发本组件 watch。
 // 我们已在 onMove 里同步了 dataset，无需再 updateData，这里用一次性标志位跳过。
 let suppressNextUpdate = false
@@ -607,7 +608,7 @@ function createTimeline() {
     groupOrder: 'order',
     min: new Date(`${DUMMY_DATE}T00:00:00`),
     max: new Date('2025-01-02T23:59:59'),
-    start: new Date(`${DUMMY_DATE}T08:30:00`),
+    start: new Date(`${DUMMY_DATE}T08:00:00`),
     end: new Date(`${DUMMY_DATE}T13:00:00`),
     zoomMin: 1000 * 60 * 5, // 5 分钟
     zoomMax: 1000 * 60 * 60 * 30, // 30 小时
@@ -664,6 +665,8 @@ function createTimeline() {
   }
 
   timeline = new Timeline(containerRef.value, itemsDataset, groupsDataset, options)
+  timeline.addCustomTime(new Date(`${DUMMY_DATE}T08:30:00`), REFERENCE_TIME_ID)
+  timeline.setCustomTimeTitle('', REFERENCE_TIME_ID)
 
   // 视窗变化（缩放/平移）后按新区间重算时间轴高亮层位置
   // 注意：vis-timeline 没有 redraw 事件，rangechange/rangechanged 是公开 API 里覆盖视窗变化的事件
@@ -747,7 +750,7 @@ function fitTimeline() {
 function resetTimeline() {
   if (!timeline) return
   timeline.setWindow(
-    new Date(`${DUMMY_DATE}T08:30:00`),
+    new Date(`${DUMMY_DATE}T08:00:00`),
     new Date(`${DUMMY_DATE}T13:00:00`),
     { animation: { duration: 300 } }
   )
@@ -1035,5 +1038,14 @@ onBeforeUnmount(() => {
   background-color: rgba(22, 119, 255, 0.85) !important;
   width: 2px !important;
   pointer-events: none !important;
+}
+/* 固定排班参考线；与冻结标记独立，不参与鼠标交互。 */
+.gantt-container .vis-custom-time.schedule-reference {
+  background-color: #595959;
+  width: 2px;
+  pointer-events: none;
+}
+.gantt-container .vis-custom-time.schedule-reference * {
+  pointer-events: none;
 }
 </style>

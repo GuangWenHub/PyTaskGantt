@@ -43,6 +43,7 @@ vi.mock('vis-timeline/standalone', () => ({
       this.groups = groups
       this.options = options
       this.handlers = {}
+      this.customTimes = new Map()
       timelineState.instances.push(this)
     }
 
@@ -55,10 +56,18 @@ vi.mock('vis-timeline/standalone', () => ({
     redraw() {
       this.redrawCalls = (this.redrawCalls || 0) + 1
     }
-    setWindow() {}
+    addCustomTime(time, id) {
+      this.customTimes.set(id, { time })
+    }
+    setCustomTimeTitle(title, id) {
+      this.customTimes.get(id).title = title
+    }
+    setWindow(start, end) {
+      this.window = { start, end }
+    }
     getWindow() {
       return {
-        start: new Date('2025-01-01T08:30:00'),
+        start: new Date('2025-01-01T08:00:00'),
         end: new Date('2025-01-01T13:00:00'),
       }
     }
@@ -111,6 +120,18 @@ describe('GanttChart ownership boundary', () => {
     expect(timeline).toBeTruthy()
     expect(timeline.options.height).toBe('100%')
     expect(timeline.options.maxHeight).toBeUndefined()
+    expect(timeline.options.start).toEqual(new Date('2025-01-01T08:00:00'))
+    expect(timeline.options.end).toEqual(new Date('2025-01-01T13:00:00'))
+    const reference = {
+      time: new Date('2025-01-01T08:30:00'),
+      title: '',
+    }
+    expect([...timeline.customTimes.values()]).toEqual([reference])
+    await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
+    expect(timeline.window).toEqual({
+      start: timeline.options.start,
+      end: timeline.options.end,
+    })
 
     const ganttViewport = wrapper.get('.gantt-viewport').element
     const originalInnerHeight = window.innerHeight
@@ -171,6 +192,7 @@ describe('GanttChart ownership boundary', () => {
     await nextTick()
     expect(wrapper.get('.gantt-container').classes()).not.toContain('gantt-container-empty')
     expect(timeline.redrawCalls).toBeGreaterThan(0)
+    expect([...timeline.customTimes.values()]).toEqual([reference])
 
     wrapper.unmount()
   })
