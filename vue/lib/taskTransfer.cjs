@@ -3,7 +3,7 @@ const { stringify } = require('csv-stringify/sync');
 const { ValidationError } = require('../server/errors.cjs');
 
 function normalizeTags(value, csv = false) {
-  const values = Array.isArray(value) ? value : String(value || '').split(csv ? ';' : ',');
+  const values = Array.isArray(value) ? value : String(value || '').split(csv ? ';' : /[;,]/);
   return [...new Set(values.map(item => String(item).trim()).filter(Boolean))];
 }
 

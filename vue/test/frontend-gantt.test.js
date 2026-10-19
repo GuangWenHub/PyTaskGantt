@@ -64,9 +64,11 @@ vi.mock('vis-timeline/standalone', () => ({
     }
     setWindow(start, end) {
       this.window = { start, end }
+      this.handlers.rangechange?.()
+      this.handlers.rangechanged?.()
     }
     getWindow() {
-      return {
+      return this.window || {
         start: new Date('2025-01-01T08:00:00'),
         end: new Date('2025-01-01T13:00:00'),
       }
@@ -127,7 +129,18 @@ describe('GanttChart ownership boundary', () => {
       title: '',
     }
     expect([...timeline.customTimes.values()]).toEqual([reference])
+    const container = wrapper.get('.gantt-container')
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:00'))
+    await nextTick()
+    expect(container.classes()).toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:01'))
+    await nextTick()
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:00'))
+    await nextTick()
     await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
     expect(timeline.window).toEqual({
       start: timeline.options.start,
       end: timeline.options.end,

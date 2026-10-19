@@ -26,7 +26,8 @@
       <div
         ref="containerRef"
         class="gantt-container"
-        :class="{ 'gantt-container-empty': !tasks.length }"
+        :class="{ 'gantt-container-empty': !tasks.length, 'gantt-reference-easter-egg': referenceEasterEgg }"
+        :style="{ '--reference-mantra': JSON.stringify(referenceMantra) }"
       ></div>
       <n-empty
         v-if="!tasks.length"
@@ -93,6 +94,13 @@ let resizeRaf = null
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
 const REFERENCE_TIME_ID = 'schedule-reference'
+const MIN_ZOOM_WINDOW_MS = 1000 * 60 * 5
+const referenceEasterEgg = ref(false)
+const REFERENCE_MANTRA = '佛祖保佑不异常无bug · 南无阿弥陀佛 · 唵嘛呢叭咪吽 · '
+// 按图表高度补足重复文字，超出参考线的部分由样式裁切。
+const referenceMantra = computed(() => REFERENCE_MANTRA.repeat(
+  Math.ceil(ganttHeight.value / REFERENCE_MANTRA.length) + 1
+))
 // 拖拽自身触发的 task-update 会导致父组件 allTasks 变化 → 触发本组件 watch。
 // 我们已在 onMove 里同步了 dataset，无需再 updateData，这里用一次性标志位跳过。
 let suppressNextUpdate = false
@@ -610,7 +618,7 @@ function createTimeline() {
     max: new Date('2025-01-02T23:59:59'),
     start: new Date(`${DUMMY_DATE}T08:00:00`),
     end: new Date(`${DUMMY_DATE}T13:00:00`),
-    zoomMin: 1000 * 60 * 5, // 5 分钟
+    zoomMin: MIN_ZOOM_WINDOW_MS, // 5 分钟
     zoomMax: 1000 * 60 * 60 * 30, // 30 小时
     format: {
       minorLabels: { minute: 'HH:mm', hour: 'HH:mm' },
@@ -670,8 +678,8 @@ function createTimeline() {
 
   // 视窗变化（缩放/平移）后按新区间重算时间轴高亮层位置
   // 注意：vis-timeline 没有 redraw 事件，rangechange/rangechanged 是公开 API 里覆盖视窗变化的事件
-  timeline.on('rangechange', () => updateAxisOverlay())
-  timeline.on('rangechanged', () => updateAxisOverlay())
+  timeline.on('rangechange', handleRangeChange)
+  timeline.on('rangechanged', handleRangeChange)
 
   // 单击：触发编辑
   timeline.on('click', props_evt => {
@@ -709,6 +717,13 @@ function createTimeline() {
     if (isDragging) return
     hideTip()
   })
+}
+
+function handleRangeChange() {
+  updateAxisOverlay()
+  const { start, end } = timeline.getWindow()
+  // vis 的时间窗口可能存在毫秒取整误差；仅在最大放大倍率显示彩蛋。
+  referenceEasterEgg.value = end.getTime() - start.getTime() <= MIN_ZOOM_WINDOW_MS + 1
 }
 
 function formatTime(date) {
@@ -1041,8 +1056,29 @@ onBeforeUnmount(() => {
 }
 /* 固定排班参考线；与冻结标记独立，不参与鼠标交互。 */
 .gantt-container .vis-custom-time.schedule-reference {
-  background-color: #595959;
-  width: 2px;
+  background: repeating-linear-gradient(to bottom, #595959 0 4px, transparent 4px 8px);
+  width: 1px;
+  pointer-events: none;
+}
+.gantt-container.gantt-reference-easter-egg .vis-custom-time.schedule-reference {
+  background: none;
+}
+.gantt-container.gantt-reference-easter-egg .vis-custom-time.schedule-reference::after {
+  content: var(--reference-mantra);
+  position: absolute;
+  top: 48px;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  white-space: nowrap;
+  font-size: 8px;
+  width: 1em;
+  overflow: hidden;
+  line-height: 1;
+  letter-spacing: 1px;
+  color: #595959;
   pointer-events: none;
 }
 .gantt-container .vis-custom-time.schedule-reference * {
