@@ -72,6 +72,8 @@ import {
   getBotColor,
   getTaskFrequencyBadge,
   DUMMY_DATE,
+  DEFAULT_TIMELINE_WINDOW_MS,
+  getCurrentTimeWindow,
   isCrossDay,
   formatDuration,
   escapeHtml,
@@ -91,6 +93,7 @@ let itemsDataset = null
 let groupsDataset = null
 let containerResizeObserver = null
 let resizeRaf = null
+let initialFocusRaf = null
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
 const REFERENCE_TIME_ID = 'schedule-reference'
@@ -594,6 +597,7 @@ function createTimeline() {
 
   itemsDataset = new DataSet(buildItems(props.tasks))
   groupsDataset = new DataSet(buildGroups(props.tasks))
+  const dayStart = new Date(`${DUMMY_DATE}T00:00:00`)
 
   const options = {
     stack: false,
@@ -614,10 +618,11 @@ function createTimeline() {
     height: '100%',
     groupHeightMode: 'fixed',
     groupOrder: 'order',
-    min: new Date(`${DUMMY_DATE}T00:00:00`),
+    // 凌晨居中时左侧需要延伸到前一天，避免被 vis 的边界钳制。
+    min: new Date(dayStart.getTime() - DEFAULT_TIMELINE_WINDOW_MS / 2),
     max: new Date('2025-01-02T23:59:59'),
-    start: new Date(`${DUMMY_DATE}T08:00:00`),
-    end: new Date(`${DUMMY_DATE}T13:00:00`),
+    start: dayStart,
+    end: new Date(dayStart.getTime() + DEFAULT_TIMELINE_WINDOW_MS),
     zoomMin: MIN_ZOOM_WINDOW_MS, // 5 分钟
     zoomMax: 1000 * 60 * 60 * 30, // 30 小时
     format: {
@@ -717,6 +722,14 @@ function createTimeline() {
     if (isDragging) return
     hideTip()
   })
+
+  // 先让起始视窗完成一帧绘制，再播放滑向当前时间的动画。
+  initialFocusRaf = requestAnimationFrame(() => {
+    initialFocusRaf = requestAnimationFrame(() => {
+      initialFocusRaf = null
+      resetTimeline()
+    })
+  })
 }
 
 function handleRangeChange() {
@@ -764,10 +777,13 @@ function fitTimeline() {
 
 function resetTimeline() {
   if (!timeline) return
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
+  const { start, end } = getCurrentTimeWindow()
   timeline.setWindow(
-    new Date(`${DUMMY_DATE}T08:00:00`),
-    new Date(`${DUMMY_DATE}T13:00:00`),
-    { animation: { duration: 300 } }
+    start,
+    end,
+    { animation: { duration: 1200, easingFunction: 'easeInOutQuad' } }
   )
 }
 
@@ -851,6 +867,8 @@ onBeforeUnmount(() => {
   containerResizeObserver = null
   if (resizeRaf != null) cancelAnimationFrame(resizeRaf)
   resizeRaf = null
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
   stopAutoScroll()
   if (timeline) {
     timeline.destroy()

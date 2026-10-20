@@ -2,7 +2,8 @@
 
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getCurrentTimeWindow } from '../src/services/dataService.js'
 
 const timelineState = vi.hoisted(() => ({ instances: [] }))
 
@@ -62,8 +63,10 @@ vi.mock('vis-timeline/standalone', () => ({
     setCustomTimeTitle(title, id) {
       this.customTimes.get(id).title = title
     }
-    setWindow(start, end) {
+    setWindow(start, end, options) {
       this.window = { start, end }
+      this.windowOptions = options
+      this.setWindowCalls = (this.setWindowCalls || 0) + 1
       this.handlers.rangechange?.()
       this.handlers.rangechanged?.()
     }
@@ -94,6 +97,37 @@ function task(overrides = {}) {
 describe('GanttChart ownership boundary', () => {
   beforeEach(() => {
     timelineState.instances.length = 0
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-20T06:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('首次绘制后滑到当前时间，任务轮询刷新不重置用户视窗', async () => {
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [] },
+      global: {
+        stubs: {
+          NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+          NSpace: { template: '<div><slot/></div>' },
+          NButton: { template: '<button><slot/></button>' },
+          NEmpty: { template: '<div />' },
+          teleport: true,
+        },
+      },
+    })
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.window).toBeUndefined()
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    expect(timeline.window).toEqual(getCurrentTimeWindow())
+    expect(timeline.windowOptions.animation).toEqual({ duration: 1200, easingFunction: 'easeInOutQuad' })
+    expect(timeline.options.min.getTime()).toBeLessThanOrEqual(new Date('2024-12-31T21:30:00').getTime())
+
+    const chosenWindow = { start: new Date('2025-01-01T09:00:00'), end: new Date('2025-01-01T10:00:00') }
+    timeline.setWindow(chosenWindow.start, chosenWindow.end)
+    await wrapper.setProps({ tasks: [task()] })
+    expect(timeline.window).toEqual(chosenWindow)
+    expect(timeline.setWindowCalls).toBe(2)
+    wrapper.unmount()
   })
 
   it('只允许 can_edit 任务拖拽，并将自己的新时间作为 mutation 事件上报', async () => {
@@ -122,8 +156,8 @@ describe('GanttChart ownership boundary', () => {
     expect(timeline).toBeTruthy()
     expect(timeline.options.height).toBe('100%')
     expect(timeline.options.maxHeight).toBeUndefined()
-    expect(timeline.options.start).toEqual(new Date('2025-01-01T08:00:00'))
-    expect(timeline.options.end).toEqual(new Date('2025-01-01T13:00:00'))
+    expect(timeline.options.start).toEqual(new Date('2025-01-01T00:00:00'))
+    expect(timeline.options.end).toEqual(new Date('2025-01-01T05:00:00'))
     const reference = {
       time: new Date('2025-01-01T08:30:00'),
       title: '',
@@ -141,10 +175,7 @@ describe('GanttChart ownership boundary', () => {
     await nextTick()
     await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
     expect(container.classes()).not.toContain('gantt-reference-easter-egg')
-    expect(timeline.window).toEqual({
-      start: timeline.options.start,
-      end: timeline.options.end,
-    })
+    expect(timeline.window).toEqual(getCurrentTimeWindow())
 
     const ganttViewport = wrapper.get('.gantt-viewport').element
     const originalInnerHeight = window.innerHeight

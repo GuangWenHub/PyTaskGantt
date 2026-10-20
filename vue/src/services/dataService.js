@@ -1,4 +1,19 @@
 export const DUMMY_DATE = '2025-01-01'
+export const DEFAULT_TIMELINE_WINDOW_MS = 5 * 60 * 60 * 1000
+
+export function getCurrentTimeWindow(now = new Date()) {
+  // 真实日期不能直接放入虚拟排班轴；只将上海时区的时分秒映射到虚拟日期。
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai', hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(now)
+  const clock = Object.fromEntries(parts.map(part => [part.type, part.value]))
+  const center = new Date(`${DUMMY_DATE}T${clock.hour}:${clock.minute}:${clock.second}`)
+  return {
+    start: new Date(center.getTime() - DEFAULT_TIMELINE_WINDOW_MS / 2),
+    end: new Date(center.getTime() + DEFAULT_TIMELINE_WINDOW_MS / 2),
+  }
+}
 
 function timeToMinutes(timeStr) {
   if (!timeStr) return 0

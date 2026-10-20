@@ -9,9 +9,21 @@ import {
   isCrossDay,
   parseTimeToDate,
   summarizeSyncCutoff,
+  getCurrentTimeWindow,
+  DEFAULT_TIMELINE_WINDOW_MS,
 } from '../src/services/dataService.js'
 
 describe('frontend data utilities', () => {
+  it.each([
+    ['2026-10-20T06:00:00Z', '2025-01-01T11:30:00', '2025-01-01T16:30:00'],
+    ['2026-10-19T16:15:00Z', '2024-12-31T21:45:00', '2025-01-01T02:45:00'],
+    ['2026-10-20T15:45:00Z', '2025-01-01T21:15:00', '2025-01-02T02:15:00'],
+  ])('按上海时间居中并保留跨天视窗：%s', (now, start, end) => {
+    const window = getCurrentTimeWindow(new Date(now))
+    expect(window).toEqual({ start: new Date(start), end: new Date(end) })
+    expect(window.end - window.start).toBe(DEFAULT_TIMELINE_WINDOW_MS)
+  })
+
   it('为不同机器人生成稳定且不受八色调色板限制的颜色', () => {
     expect(getBotColor('机器人1')).toBe(getBotColor('机器人1'))
     expect(getBotColor('机器人1')).not.toBe(getBotColor('机器人10'))
