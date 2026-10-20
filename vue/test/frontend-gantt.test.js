@@ -96,6 +96,7 @@ function task(overrides = {}) {
 
 describe('GanttChart ownership boundary', () => {
   beforeEach(() => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=; Max-Age=0; Path=/'
     timelineState.instances.length = 0
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-20T06:00:00Z'))
@@ -103,6 +104,7 @@ describe('GanttChart ownership boundary', () => {
   afterEach(() => vi.useRealTimers())
 
   it('首次绘制后滑到当前时间，任务轮询刷新不重置用户视窗', async () => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
     const wrapper = mount(GanttChart, {
       props: { tasks: [] },
       global: {
@@ -128,6 +130,94 @@ describe('GanttChart ownership boundary', () => {
     expect(timeline.window).toEqual(chosenWindow)
     expect(timeline.setWindowCalls).toBe(2)
     wrapper.unmount()
+  })
+
+  it('默认关闭自动定位，开启和关闭写 Cookie，重新进入恢复选择', async () => {
+    const mountChart = () => mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    const waitFrames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    let wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBeUndefined()
+    let toggle = wrapper.findAll('button').find(button => button.text() === '自动滚动')
+    expect(toggle.attributes('aria-pressed')).toBe('false')
+    await toggle.trigger('click')
+    expect(document.cookie).toContain('pytaskgantt.timelineAutoScroll=1')
+    expect(timelineState.instances.at(-1).window).toEqual(getCurrentTimeWindow())
+    wrapper.unmount()
+    wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBe(1)
+    toggle = wrapper.findAll('button').find(button => button.text() === '自动滚动')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
+    await toggle.trigger('click')
+    expect(document.cookie).toContain('pytaskgantt.timelineAutoScroll=0')
+    wrapper.unmount()
+    wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
+    expect(timelineState.instances.at(-1).window).toEqual(getCurrentTimeWindow())
+    wrapper.unmount()
+  })
+
+  it('切回标签页或窗口恢复焦点时按新时间定位，合并重复事件；关闭和卸载后不触发', async () => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    await frames()
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.setWindowCalls).toBe(1)
+    window.dispatchEvent(new Event('blur'))
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    vi.setSystemTime(new Date('2026-10-20T06:10:00Z'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(1)
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    expect(timeline.window).toEqual(getCurrentTimeWindow())
+    // Already centered: a new activation does not replay the animation.
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    // Window focus alone also works after time has advanced.
+    window.dispatchEvent(new Event('blur'))
+    vi.setSystemTime(new Date('2026-10-20T06:20:00Z'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(3)
+    await wrapper.findAll('button').find(button => button.text() === '自动滚动').trigger('click')
+    window.dispatchEvent(new Event('blur'))
+    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(3)
+    wrapper.unmount()
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(3)
+    visibility.mockRestore()
   })
 
   it('只允许 can_edit 任务拖拽，并将自己的新时间作为 mutation 事件上报', async () => {

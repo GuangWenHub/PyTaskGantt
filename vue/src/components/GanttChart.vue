@@ -16,6 +16,9 @@
         <n-button size="tiny" tertiary @click="resetTimeline" title="重置视图">
           重置
         </n-button>
+        <n-button size="tiny" :tertiary="!autoScroll" :type="autoScroll ? 'primary' : 'default'" :aria-pressed="autoScroll" @click="toggleAutoScroll" title="打开或重新激活页面时自动定位当前时间；设置保存在此浏览器一年，每次进入续期">
+          自动滚动
+        </n-button>
       </n-space>
     </template>
     <div
@@ -85,6 +88,31 @@ const props = defineProps({
 
 const emit = defineEmits(['task-click', 'task-update'])
 
+const AUTO_SCROLL_COOKIE = 'pytaskgantt.timelineAutoScroll'
+function readAutoScroll() {
+  try { return document.cookie.split(';').some(value => value.trim() === `${AUTO_SCROLL_COOKIE}=1`) }
+  catch { return false }
+}
+const autoScroll = ref(readAutoScroll())
+function saveAutoScroll() {
+  try {
+    document.cookie = `${AUTO_SCROLL_COOKIE}=${autoScroll.value ? '1' : '0'}; Max-Age=31536000; Path=/; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`
+  } catch { /* Browsers that block cookies can still use the switch for this visit. */ }
+}
+function toggleAutoScroll() {
+  autoScroll.value = !autoScroll.value
+  saveAutoScroll()
+  if (autoScroll.value) {
+    activationHandled = document.visibilityState !== 'hidden'
+    resetTimeline()
+  }
+  else {
+    if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+    if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
+    initialFocusRaf = activationFocusRaf = null
+  }
+}
+
 const viewportRef = ref(null)
 const containerRef = ref(null)
 const ganttHeight = ref(320)
@@ -94,6 +122,8 @@ let groupsDataset = null
 let containerResizeObserver = null
 let resizeRaf = null
 let initialFocusRaf = null
+let activationFocusRaf = null
+let activationHandled = document.visibilityState !== 'hidden'
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
 const REFERENCE_TIME_ID = 'schedule-reference'
@@ -724,10 +754,10 @@ function createTimeline() {
   })
 
   // 先让起始视窗完成一帧绘制，再播放滑向当前时间的动画。
-  initialFocusRaf = requestAnimationFrame(() => {
+  if (autoScroll.value && document.visibilityState !== 'hidden') initialFocusRaf = requestAnimationFrame(() => {
     initialFocusRaf = requestAnimationFrame(() => {
       initialFocusRaf = null
-      resetTimeline()
+      if (autoScroll.value) resetTimeline()
     })
   })
 }
@@ -777,6 +807,8 @@ function fitTimeline() {
 
 function resetTimeline() {
   if (!timeline) return
+  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
+  activationFocusRaf = null
   if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
   initialFocusRaf = null
   const { start, end } = getCurrentTimeWindow()
@@ -785,6 +817,34 @@ function resetTimeline() {
     end,
     { animation: { duration: 1200, easingFunction: 'easeInOutQuad' } }
   )
+}
+
+function deactivateTimeline() {
+  activationHandled = false
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
+  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
+  activationFocusRaf = null
+}
+
+function activateTimeline() {
+  if (!autoScroll.value || document.visibilityState === 'hidden' || activationHandled) return
+  activationHandled = true
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
+  activationFocusRaf = requestAnimationFrame(() => {
+    activationFocusRaf = null
+    if (!autoScroll.value || !timeline || document.visibilityState === 'hidden') return
+    const current = timeline.getWindow()
+    const target = getCurrentTimeWindow()
+    const center = range => (range.start.getTime() + range.end.getTime()) / 2
+    if (Math.abs(center(current) - center(target)) > 1000) resetTimeline()
+  })
+}
+
+function handlePageVisibility() {
+  if (document.visibilityState === 'hidden') deactivateTimeline()
+  else activateTimeline()
 }
 
 watch(
@@ -807,8 +867,12 @@ watch(
 )
 
 onMounted(() => {
+  saveAutoScroll()
   resizeTimelineToViewport()
   createTimeline()
+  window.addEventListener('focus', activateTimeline)
+  window.addEventListener('blur', deactivateTimeline)
+  document.addEventListener('visibilitychange', handlePageVisibility)
   window.addEventListener('resize', resizeTimelineToViewport, { passive: true })
   window.addEventListener('scroll', resizeTimelineOnScroll, { passive: true })
   window.visualViewport?.addEventListener('resize', resizeTimelineToViewport, { passive: true })
@@ -847,6 +911,11 @@ function hideDragTip() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', activateTimeline)
+  window.removeEventListener('blur', deactivateTimeline)
+  document.removeEventListener('visibilitychange', handlePageVisibility)
+  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
+  activationFocusRaf = null
   window.removeEventListener('pointermove', onWindowMouseMove, { capture: true })
   window.removeEventListener('mousemove', onWindowMouseMove, { capture: true })
   window.removeEventListener('pointerup', hideDragTip, { capture: true })

@@ -141,6 +141,8 @@ DEV_USER_NAMES=张三,李四 npm run seed:dev
 - `src/services/authService.js` / `taskService.js` / `yingdaoService.js`：API 门面。
 - `src/components/GanttChart.vue`：vis-timeline 拖拽；只允许 `can_edit` 任务更新。
 
+甘特图打开或重新激活时的自动定位由标题栏开关控制，默认关闭；偏好只存浏览器 Cookie `pytaskgantt.timelineAutoScroll`（一年、进入续期），与登录 Cookie 独立。切回标签页和窗口重新获得焦点均检查当前位置，同一次激活去重，已居中不滚动；卸载时移除监听。开关不控制后台同步，不在轮询时重置视窗；手动“重置”始终可用。
+
 轮询刷新必须保留本地 mutation 字段，同时合并服务端运行状态。离开路由、退出和刷新时继续保护未保存草稿。
 
 所有时间先规范为 `HH:MM:SS`。vis-timeline 使用虚拟日期表示时间条；`Finish < Start` 时结束日期推到次日。改时间逻辑必须覆盖跨天测试。
