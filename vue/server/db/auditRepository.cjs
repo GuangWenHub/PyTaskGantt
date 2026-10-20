@@ -10,6 +10,7 @@ const ALLOWED_ACTIONS = Object.freeze([
   'import',
   'run_now',
   'admin_recover',
+  'restore',
 ]);
 
 function createAuditRepository(db) {

@@ -8,6 +8,7 @@ const { createRetentionService } = require('./services/retentionService.cjs');
 const { createTaskMutationService } = require('./services/taskMutationService.cjs');
 const { createTaskActionService } = require('./services/taskActionService.cjs');
 const { createFeishuClient, createFeishuAuthService } = require('./services/feishuAuthService.cjs');
+const { createTaskHistoryService } = require('./services/taskHistoryService.cjs');
 
 function appConfig(config, schema) {
   return {
@@ -89,6 +90,7 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
   });
 
   const taskMutation = createTaskMutationService({ pool, scheduleDirectory });
+  const taskHistory = createTaskHistoryService({ pool, historyRepository: repositories.taskHistory, scheduleDirectory });
   const taskActions = createTaskActionService({
     pool,
     scheduleDirectory,
@@ -111,6 +113,7 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
       syncCoordinator,
       retentionService,
       taskMutation,
+      taskHistory,
       taskActions,
       executionDetails,
       feishuAuth,

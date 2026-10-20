@@ -89,6 +89,7 @@ REVOKE ALL PRIVILEGES ON TABLE
   public.rpa_task_binding_history,
   public.rpa_task_executions,
   public.rpa_task_audit_log,
+  public.rpa_task_operation_history,
   public.rpa_task_run_requests,
   public.app_sessions
 FROM PUBLIC;
@@ -100,6 +101,7 @@ REVOKE ALL PRIVILEGES ON TABLE
   public.rpa_task_binding_history,
   public.rpa_task_executions,
   public.rpa_task_audit_log,
+  public.rpa_task_operation_history,
   public.rpa_task_run_requests,
   public.app_sessions
 FROM :"runtime_role";
@@ -110,6 +112,7 @@ GRANT SELECT, INSERT, UPDATE ON TABLE public.rpa_tasks TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE ON TABLE public.rpa_task_binding_history TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.rpa_task_executions TO :"runtime_role";
 GRANT SELECT, INSERT ON TABLE public.rpa_task_audit_log TO :"runtime_role";
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.rpa_task_operation_history TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE ON TABLE public.rpa_task_run_requests TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.app_sessions TO :"runtime_role";
 
@@ -117,6 +120,7 @@ REVOKE ALL PRIVILEGES ON SEQUENCE
   public.app_users_id_seq,
   public.rpa_tasks_id_seq,
   public.rpa_task_binding_history_id_seq,
+  public.rpa_task_operation_history_id_seq,
   public.rpa_task_audit_log_id_seq
 FROM PUBLIC;
 
@@ -124,6 +128,7 @@ REVOKE ALL PRIVILEGES ON SEQUENCE
   public.app_users_id_seq,
   public.rpa_tasks_id_seq,
   public.rpa_task_binding_history_id_seq,
+  public.rpa_task_operation_history_id_seq,
   public.rpa_task_audit_log_id_seq
 FROM :"runtime_role";
 
@@ -131,6 +136,7 @@ GRANT USAGE ON SEQUENCE
   public.app_users_id_seq,
   public.rpa_tasks_id_seq,
   public.rpa_task_binding_history_id_seq,
+  public.rpa_task_operation_history_id_seq,
   public.rpa_task_audit_log_id_seq
 TO :"runtime_role";
 

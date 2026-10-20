@@ -57,7 +57,7 @@ npm run test:frontend
 
 ## 数据库与迁移
 
-- `storage/migrations/001-006` 是权威迁移历史。
+- `storage/migrations/001-008` 是权威迁移历史。
 - `storage/migrate.cjs` 使用 advisory lock、逐版本事务和 SHA-256 checksum。
 - `storage/schema.sql` 是面向 psql 的原子快照入口。
 - 服务启动只读校验 `schema_migrations`；缺失、落后、过新或 checksum 不一致均拒绝启动，绝不自动 DDL。

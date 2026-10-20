@@ -77,6 +77,8 @@ WITH expected(table_name, privilege) AS (
     ('rpa_task_executions', 'UPDATE'),
     ('rpa_task_executions', 'DELETE'),
     ('rpa_task_audit_log', 'SELECT'), ('rpa_task_audit_log', 'INSERT'),
+    ('rpa_task_operation_history', 'SELECT'), ('rpa_task_operation_history', 'INSERT'),
+    ('rpa_task_operation_history', 'UPDATE'), ('rpa_task_operation_history', 'DELETE'),
     ('rpa_task_run_requests', 'SELECT'),
     ('rpa_task_run_requests', 'INSERT'),
     ('rpa_task_run_requests', 'UPDATE'),
@@ -108,6 +110,7 @@ WITH tables(table_name) AS (
     ('rpa_task_binding_history'),
     ('rpa_task_executions'),
     ('rpa_task_audit_log'),
+    ('rpa_task_operation_history'),
     ('rpa_task_run_requests'),
     ('app_sessions')
 ), privileges(privilege) AS (
@@ -126,6 +129,8 @@ WITH tables(table_name) AS (
     ('rpa_task_executions', 'UPDATE'),
     ('rpa_task_executions', 'DELETE'),
     ('rpa_task_audit_log', 'SELECT'), ('rpa_task_audit_log', 'INSERT'),
+    ('rpa_task_operation_history', 'SELECT'), ('rpa_task_operation_history', 'INSERT'),
+    ('rpa_task_operation_history', 'UPDATE'), ('rpa_task_operation_history', 'DELETE'),
     ('rpa_task_run_requests', 'SELECT'),
     ('rpa_task_run_requests', 'INSERT'),
     ('rpa_task_run_requests', 'UPDATE'),
@@ -157,6 +162,7 @@ WITH sequences(sequence_name) AS (
     ('app_users_id_seq'),
     ('rpa_tasks_id_seq'),
     ('rpa_task_binding_history_id_seq'),
+    ('rpa_task_operation_history_id_seq'),
     ('rpa_task_audit_log_id_seq')
 )
 SELECT NOT EXISTS (

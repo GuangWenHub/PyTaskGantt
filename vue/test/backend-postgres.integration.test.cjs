@@ -3,6 +3,7 @@ const { createPool } = require('../server/db/pool.cjs');
 const { initializeRepositories } = require('../server/db/index.cjs');
 const { createTaskMutationService } = require('../server/services/taskMutationService.cjs');
 const { createTaskActionService } = require('../server/services/taskActionService.cjs');
+const { createTaskHistoryService } = require('../server/services/taskHistoryService.cjs');
 const { createApp } = require('../server/app.cjs');
 const { ConflictError, NotFoundError } = require('../server/errors.cjs');
 const { backfillLegacyTask } = require('../storage/backfillLegacyTask.cjs');
@@ -45,6 +46,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
       trackExecution() { return Promise.resolve(); },
     };
     const services = {
+      taskHistory: createTaskHistoryService({ pool, historyRepository: repositories.taskHistory, scheduleDirectory }),
       taskMutation: createTaskMutationService({ pool, scheduleDirectory }),
       taskActions: createTaskActionService({
         pool,
@@ -68,7 +70,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
         sessionCookieName: 'pytaskgantt.test.sid',
         sessionTableName: 'app_sessions',
         secureCookies: false,
-        schemaVersion: 7,
+        schemaVersion: 8,
       },
       pool,
       repositories,
@@ -781,6 +783,54 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     expect(saved.jobUuidList).toEqual(['job-kept']);
     expect(saved.clients).toEqual([{ robotClientUuid: 'client-kept', robotClientName: '客户端 A' }]);
     expect(saved.normalizedStatus).toBe('运行成功');
+  });
+
+  it('历史卡片可备注并将较早记录完整还原，重复还原被拒绝', async () => {
+    const userA = await login(1);
+    const userB = await login(2);
+    const original = await createTask(userA, 'schedule-history');
+    const update = await userA.post('/api/tasks/batch').send({ mutations: [{
+      type: 'update', id: original.id, version: original.version,
+      changes: { start: '23:30:00', finish: '01:15:00', note: '后来的备注' },
+    }] }).expect(200);
+    const version = update.body.tasks[0].version;
+    const records = await userA.get(`/api/task-history?task_id=${original.id}`).expect(200);
+    const entry = records.body.records.find(row => row.action === 'update');
+    expect(entry.before.note).toBe(original.note);
+    expect(entry.after.start).toBe('23:30:00');
+    await userB.patch(`/api/task-history/${entry.id}/annotation`).send({ annotation: '非法备注', version: 0 }).expect(403);
+    await userA.patch(`/api/task-history/${entry.id}/annotation`).send({ annotation: '7:30 前没数据', version: 0 }).expect(200);
+    await userA.post(`/api/tasks/${original.id}/transfer`).send({ target_user_id: '2', version }).expect(200);
+    await userA.get(`/api/task-history/${entry.id}/restore-preview`).expect(403);
+    const preview = await userB.get(`/api/task-history/${entry.id}/restore-preview`).expect(200);
+    expect(preview.body.target.owner_user_id).toBe('1');
+    await userB.post(`/api/task-history/${entry.id}/restore`).send({ version: preview.body.task_version }).expect(200);
+    const restored = (await userA.get('/api/tasks').expect(200)).body.tasks.find(row => row.id === original.id);
+    expect(restored).toMatchObject({ owner_user_id: '1', start: original.start, finish: original.finish, note: original.note });
+    await userA.post(`/api/task-history/${entry.id}/restore`).send({ version: restored.version }).expect(409);
+  });
+
+  it('历史保留按任务独立截断 50 条，备注不增条数且原始审计保留', async () => {
+    const agent = await login(1);
+    const task = await createTask(agent, 'schedule-history-cap');
+    const other = await createTask(agent, 'schedule-history-other');
+    let version = task.version;
+    for (let i = 0; i < 52; i += 1) {
+      const result = await agent.post('/api/tasks/batch').send({ mutations: [{
+        type: 'update', id: task.id, version, changes: { note: `历史 ${i}` },
+      }] }).expect(200);
+      version = result.body.tasks[0].version;
+    }
+    const counts = await pool.query('SELECT task_id::text, COUNT(*)::integer AS count FROM rpa_task_operation_history GROUP BY task_id');
+    expect(counts.rows.find(row => row.task_id === task.id).count).toBe(50);
+    expect(counts.rows.find(row => row.task_id === other.id).count).toBe(1);
+    const audits = await pool.query('SELECT COUNT(*)::integer AS count FROM rpa_task_audit_log WHERE task_id = $1', [task.id]);
+    expect(audits.rows[0].count).toBe(53);
+    const page = await agent.get(`/api/task-history?task_id=${task.id}&limit=5`).expect(200);
+    expect(page.body.records).toHaveLength(5);
+    expect(page.body.has_more).toBe(true);
+    const next = await agent.get(`/api/task-history?task_id=${task.id}&limit=5&before_id=${page.body.next_cursor}`).expect(200);
+    expect(next.body.records.some(row => page.body.records.some(previous => previous.id === row.id))).toBe(false);
   });
 
   it('执行记录过期清理不会删除或破坏已完成的立即执行请求关联', async () => {

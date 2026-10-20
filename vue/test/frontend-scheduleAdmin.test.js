@@ -38,6 +38,8 @@ vi.mock('../src/services/taskService.js', () => ({
   transferTask: vi.fn(),
 }))
 vi.mock('../src/stores/taskDraftStore.js', () => ({
+  myTaskStore: { isDirty: () => false, state: { loaded: false } },
+  hasAnyTaskSaveInProgress: () => false,
   scheduleTaskStore: {
     state: { loading: false, saving: false, error: '' },
     tasks: { value: [pageState.task] },
@@ -57,6 +59,9 @@ vi.mock('../src/components/AppShell.vue', () => ({
 }))
 vi.mock('../src/components/ExecutionHistoryDialog.vue', () => ({
   default: { name: 'ExecutionHistoryDialog', template: '<div />' },
+}))
+vi.mock('../src/components/TaskHistoryCard.vue', () => ({
+  default: { name: 'TaskHistoryCard', template: '<div />' },
 }))
 vi.mock('../src/components/FilterPanel.vue', () => ({
   default: { name: 'FilterPanel', template: '<div />' },

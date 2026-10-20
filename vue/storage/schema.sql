@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 \ir migrations/005_add_durable_run_requests.sql
 \ir migrations/006_add_binding_scoped_sync_generation.sql
 \ir migrations/007_add_admin_permission.sql
+\ir migrations/008_add_task_operation_history.sql
 
 INSERT INTO public.schema_migrations (version, name, checksum) VALUES
   (1, '001_add_users_and_task_ownership.sql',
@@ -41,7 +42,8 @@ INSERT INTO public.schema_migrations (version, name, checksum) VALUES
   (6, '006_add_binding_scoped_sync_generation.sql',
    '60168641cc15991754ab058d321cec2176c01daddbf057cc2cf4a5a0acb7e12d'),
   (7, '007_add_admin_permission.sql',
-   'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57')
+   'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57'),
+  (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

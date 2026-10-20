@@ -9,8 +9,8 @@
     </n-alert>
 
     <n-spin :show="store.state.loading">
-      <div class="schedule-layout">
-        <div class="schedule-main">
+      <div class="schedule-layout" :style="{ '--schedule-main-height': mainHeight ? `${mainHeight}px` : 'auto' }">
+        <div ref="mainElement" class="schedule-main">
           <GanttChart
             :tasks="filteredTasks"
             @task-click="handleTaskClick"
@@ -47,6 +47,14 @@
             @export="handleExport"
             @create="openCreate"
             @save="handleSave"
+          />
+          <TaskHistoryCard
+            :users="users"
+            :tasks="filteredTasks"
+            :visible-task-ids="historyTaskIds"
+            :refresh-key="store.state.serverTime"
+            :is-task-dirty="historyTaskHasDraft"
+            @restored="handleHistoryRestored"
           />
         </aside>
       </div>
@@ -124,6 +132,7 @@ import GanttChart from '../components/GanttChart.vue'
 import SchedulePicker from '../components/SchedulePicker.vue'
 import TaskEditor from '../components/TaskEditor.vue'
 import TaskList from '../components/TaskList.vue'
+import TaskHistoryCard from '../components/TaskHistoryCard.vue'
 import { auth } from '../services/authService.js'
 import { filterTasks, formatDateTime, summarizeSyncCutoff } from '../services/dataService.js'
 import {
@@ -136,7 +145,20 @@ import {
   syncTask,
   transferTask,
 } from '../services/taskService.js'
-import { scheduleTaskStore as store } from '../stores/taskDraftStore.js'
+import { scheduleTaskStore as store, myTaskStore, hasAnyTaskSaveInProgress } from '../stores/taskDraftStore.js'
+
+function historyTaskHasDraft(id) {
+  return hasAnyTaskSaveInProgress() || store.isDirty(id) || myTaskStore.isDirty(id)
+}
+
+async function handleHistoryRestored() {
+  try {
+    await Promise.all([
+      store.load({ preserveDraft: true, silent: true }),
+      ...(myTaskStore.state.loaded ? [myTaskStore.load({ preserveDraft: true, silent: true })] : []),
+    ])
+  } catch (error) { message.error(`任务已还原，但刷新失败：${error.message}`) }
+}
 
 const message = useMessage()
 const dialog = useDialog()
@@ -151,6 +173,9 @@ const historyVisible = ref(false)
 const historyTask = ref(null)
 const actionTask = ref(null)
 const users = ref([])
+const mainElement = ref(null)
+const mainHeight = ref(0)
+let layoutObserver
 const actionLoading = ref(false)
 const rebindVisible = ref(false)
 const rebindScheduleUuid = ref('')
@@ -185,6 +210,7 @@ const filteredTasks = computed(() => filterTasks(store.tasks.value, {
   selectedOwners: selectedOwners.value,
   sortBy: sortBy.value,
 }))
+const historyTaskIds = computed(() => filteredTasks.value.map(task => String(task.id)).sort().join(','))
 const reservedScheduleUuids = computed(() => store.tasks.value
   .filter(task => task.id !== editingTask.value?.id && task.id !== actionTask.value?.id)
   .map(task => task.schedule_uuid)
@@ -197,6 +223,10 @@ const transferUserOptions = computed(() => recoveryUserOptions.value
   .filter(option => option.value !== String(actionTask.value?.owner?.id || '')))
 
 onMounted(async () => {
+  if (typeof ResizeObserver !== 'undefined') {
+    layoutObserver = new ResizeObserver(entries => { mainHeight.value = entries[0].contentRect.height })
+    if (mainElement.value) layoutObserver.observe(mainElement.value)
+  }
   try {
     await store.load({ preserveDraft: true })
   } catch (error) {
@@ -208,6 +238,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  layoutObserver?.disconnect()
   window.clearInterval(refreshTimer)
   window.removeEventListener('beforeunload', beforeUnload)
 })

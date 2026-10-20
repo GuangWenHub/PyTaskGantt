@@ -7,6 +7,7 @@ const {
 const { parseBatch } = require('./taskValidation.cjs');
 const { loadTasksByIds } = require('./taskQueries.cjs');
 const { timestampAfter } = require('../db/values.cjs');
+const { appendTaskHistory } = require('../db/taskHistoryRepository.cjs');
 
 const FIELD_TO_COLUMN = {
   task: 'task',
@@ -17,14 +18,17 @@ const FIELD_TO_COLUMN = {
   note: 'note',
 };
 
-async function addAudit(client, { taskId, actorUserId, action, oldValue = null, newValue = null }) {
+async function addAudit(client, { taskId, actorUserId, action, oldValue = null, newValue = null, beforeTask, afterTask, sourceAuditId }) {
   const result = await client.query(
     `INSERT INTO rpa_task_audit_log (task_id, actor_user_id, action, old_value, new_value)
      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
      RETURNING id`,
     [taskId, actorUserId, action, JSON.stringify(oldValue), JSON.stringify(newValue)]
   );
-  return result.rows && result.rows[0] ? result.rows[0].id : null;
+  const auditId = result.rows && result.rows[0] ? result.rows[0].id : null;
+  if (auditId == null) throw new Error('操作审计写入失败');
+  await appendTaskHistory(client, { auditId, taskId, actorUserId, action, beforeTask, afterTask, sourceAuditId });
+  return auditId;
 }
 
 function assertOwner(row, userId) {
@@ -131,6 +135,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               taskId: row.id,
               actorUserId: userId,
               action: input.audit_action || 'create',
+              beforeTask: null,
+              afterTask: row,
               newValue: {
                 task: row.task,
                 start: row.start_time,
@@ -178,6 +184,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               taskId: current.id,
               actorUserId: userId,
               action: 'update',
+              beforeTask: current,
+              afterTask: rows[0],
               oldValue: Object.fromEntries(entries.map(([field]) => [field, current[FIELD_TO_COLUMN[field]]])),
               newValue: withAdminAudit(mutation.changes, actor, current.owner_user_id),
             });
@@ -200,7 +208,7 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
              SET deleted_at = $3, schedule_uuid = NULL, schedule_bound_at = NULL,
                  version = version + 1, updated_at = $3
              WHERE id = $1 AND version = $2 AND deleted_at IS NULL
-             RETURNING id`,
+             RETURNING *`,
             [current.id, mutation.version, deletedAt]
           );
           if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
@@ -208,6 +216,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
             taskId: current.id,
             actorUserId: userId,
             action: 'delete',
+            beforeTask: current,
+            afterTask: rows[0],
             oldValue: { schedule_uuid: current.schedule_uuid, version: current.version },
             newValue: withAdminAudit(
               { deleted_at: deletedAt.toISOString() },

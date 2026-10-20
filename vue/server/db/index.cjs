@@ -4,6 +4,7 @@ const { createTasksRepository } = require('./tasksRepository.cjs');
 const { createExecutionsRepository } = require('./executionsRepository.cjs');
 const { createAuditRepository } = require('./auditRepository.cjs');
 const { createRunRequestsRepository } = require('./runRequestsRepository.cjs');
+const { createTaskHistoryRepository } = require('./taskHistoryRepository.cjs');
 
 function createRepositories(db) {
   if (!db || typeof db.query !== 'function') throw new TypeError('db.query is required');
@@ -12,6 +13,7 @@ function createRepositories(db) {
   const executions = createExecutionsRepository(db);
   const audit = createAuditRepository(db);
   const runRequests = createRunRequestsRepository(db);
+  const taskHistory = createTaskHistoryRepository(db);
 
   // Compatibility aliases keep route/bootstrap code concise while preserving
   // the domain-specific repository exports for services and tests.
@@ -31,7 +33,7 @@ function createRepositories(db) {
     };
   }
 
-  return Object.freeze({ users, tasks, executions, audit, runRequests, healthCheck });
+  return Object.freeze({ users, tasks, executions, audit, runRequests, taskHistory, healthCheck });
 }
 
 async function verifyDatabase(db, options = {}) {
