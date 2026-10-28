@@ -30,6 +30,10 @@ desktop.ini
 
 # === Claude Code 本地配置 ===
 .claude/
+.agent/
+.codex/
+.copilot/
+.pi/
 
 # === 临时截图 / 调试产物 ===
 page.png
