@@ -1,27 +1,40 @@
-/* 全局样式 - 墨绿配色 */
+/* 全局样式 - 对齐 KK AntD UI 品牌设计规范 */
 
 :root {
-  /* 基础色板 */
-  --accent: #16704B;
-  --accent-dark: #0B5639;
-  --ink: #10251A;
-  --muted: #5B6B61;
-  --page: #F6F7F2;
-  --surface: #FFFFFF;
-  --soft: #EDF2EA;
-  --line: #DCE3DC;
+  /* 品牌与交互 */
+  --brand: #009139;
+  --accent: #007F32;
+  --accent-dark: #006A2A;
+  --accent-hover: #1C9149;
+  --accent-bright: #2FA35E;
+  --accent-line: #B5D6C0;
 
-  /* 派生色 */
-  --accent-hover: #2A8560;
-  --accent-bright: #35A072;
-  --accent-line: #B5CFBF;
-  --faint: #7D8B82;
-  --line-soft: #E9EEE8;
-  --danger: #B9433A;
-  --warn: #B87414;
-  --warn-ink: #8A5A12;
-  --warn-soft: #FAF3E3;
-  --warn-line: #EAD7AE;
+  /* 文字 */
+  --ink: #221814;
+  --text: #29382F;
+  --muted: #5F6E63;
+  --faint: #7B897F;
+
+  /* 背景与线 */
+  --page: #F5F7F5;
+  --surface: #FFFFFF;
+  --warm: #F8F8F1;
+  --soft: #EDF5EF;
+  --line: #D5DFD7;
+  --line-soft: #E6EBE7;
+
+  /* 状态 */
+  --danger: #A83E2C;
+  --danger-soft: #FAEEEB;
+  --warn: #8B5D27;
+  --warn-ink: #8B5D27;
+  --warn-soft: #FBF3E6;
+  --warn-line: #EBD8B8;
+  --info: #326779;
+  --info-soft: #ECF3F5;
+
+  /* 板块水平内边距：标题、内容、页面标题共用，保证左右边缘对齐 */
+  --section-inset: 24px;
 }
 
 *,
@@ -47,7 +60,7 @@ body {
   font-family: "PingFang SC", "Microsoft YaHei", -apple-system,
     BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background-color: var(--page);
-  color: var(--ink);
+  color: var(--text);
   line-height: 1.5715;
   font-feature-settings: "tnum";
 }
@@ -70,7 +83,7 @@ a:hover {
 
 /* 全局 focus ring */
 *:focus-visible {
-  outline: 2px solid rgba(22, 112, 75, 0.4);
+  outline: 2px solid rgba(0, 127, 50, 0.4);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -86,17 +99,17 @@ a:hover {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(16, 37, 26, 0.12);
+  background: rgba(41, 56, 47, 0.12);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(16, 37, 26, 0.22);
+  background: rgba(41, 56, 47, 0.22);
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(16, 37, 26, 0.12) transparent;
+  scrollbar-color: rgba(41, 56, 47, 0.12) transparent;
 }
 
 input,
@@ -121,19 +134,16 @@ button {
   box-shadow: none;
 }
 
-.app-content .n-card > .n-card-header {
-  padding-right: 0;
-  padding-left: 0;
-}
-
-.app-content .n-card > .n-card__content,
+.app-content .n-card > .n-card-header,
+.app-content .n-card > .n-card-content,
 .app-content .n-card > .n-card__footer {
-  padding-right: 0;
-  padding-left: 0;
+  padding-right: var(--section-inset);
+  padding-left: var(--section-inset);
 }
 
 .app-content .n-card > .n-card-header .n-card-header__main {
-  font-size: 15px;
+  color: var(--ink);
+  font-size: 18px;
   font-weight: 600;
 }
 
@@ -142,7 +152,7 @@ button {
   display: inline-block;
   padding: 1px 6px;
   background: var(--soft);
-  border-radius: 4px;
+  border-radius: 6px;
   white-space: nowrap;
   font-family: "SF Mono", "Fira Code", Consolas, monospace;
   font-size: 12px;
@@ -256,7 +266,7 @@ button {
   flex-direction: column;
   align-items: flex-start;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   flex: 1;
   min-width: 0;
 }
@@ -266,7 +276,7 @@ button {
 }
 
 .stat-card-gray {
-  background: rgba(16, 37, 26, 0.035);
+  background: rgba(41, 56, 47, 0.035);
 }
 
 .stat-card-num {
@@ -335,7 +345,7 @@ button {
 /* === vis-timeline 自定义样式覆盖 - 企业风精修 === */
 .vis-timeline {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
   font-family: inherit;
   font-size: 13px;
   background: transparent;
@@ -375,7 +385,7 @@ button {
 
 /* 左侧 group label */
 .vis-labelset .vis-label {
-  color: var(--ink);
+  color: var(--text);
   font-weight: 400;
   border-color: var(--line-soft);
   background: transparent;
@@ -401,7 +411,7 @@ button {
 }
 
 .vis-foreground .vis-group:nth-child(even) {
-  background: rgba(16, 37, 26, 0.025);
+  background: rgba(41, 56, 47, 0.025);
 }
 
 /* item 样式精修 —— 注意：transition 不要包含 transform/left/top，
@@ -412,7 +422,7 @@ button {
   font-size: 11px;
   color: #ffffff;
   padding: 0;
-  box-shadow: 0 1px 2px rgba(16, 37, 26, 0.08);
+  box-shadow: 0 1px 2px rgba(41, 56, 47, 0.08);
   transition: box-shadow 0.15s ease;
   cursor: pointer;
   font-weight: 500;
@@ -424,13 +434,13 @@ button {
 }
 
 .vis-item:hover {
-  box-shadow: 0 2px 6px rgba(16, 37, 26, 0.15);
+  box-shadow: 0 2px 6px rgba(41, 56, 47, 0.15);
   z-index: 2;
 }
 
 .vis-item.vis-selected {
-  box-shadow: 0 0 0 2px rgba(22, 112, 75, 0.4),
-    0 2px 6px rgba(16, 37, 26, 0.15);
+  box-shadow: 0 0 0 2px rgba(0, 127, 50, 0.4),
+    0 2px 6px rgba(41, 56, 47, 0.15);
 }
 
 .vis-item .vis-item-content {
@@ -494,7 +504,7 @@ body,
   height: 100%;
   display: inline-flex;
   align-items: center;
-  padding: 0 18px;
+  padding: 0 16px;
   color: var(--muted);
   font-weight: 500;
 }
@@ -560,16 +570,19 @@ body,
 
 .page-heading {
   max-width: 1680px;
-  margin: 0 auto 18px;
+  margin: 0 auto 24px;
+  padding: 0 var(--section-inset);
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 20px;
+  gap: 24px;
 }
 
 .page-heading h1 {
   margin: 0;
-  font-size: 22px;
+  color: var(--ink);
+  font-size: 26px;
+  font-weight: 650;
   line-height: 1.35;
 }
 
@@ -579,8 +592,8 @@ body,
 }
 
 .page-alert {
-  max-width: 1680px;
-  margin: 0 auto 16px;
+  max-width: calc(1680px - 2 * var(--section-inset));
+  margin: 0 var(--section-inset) 16px;
 }
 
 /* 甘特图与筛选面板同一行（筛选面板相对甘特图上下居中），任务列表在下方占满整行 */
@@ -696,7 +709,7 @@ body,
   max-height: calc(100vh - 32px);
 }
 
-.responsive-modal > .n-card__content {
+.responsive-modal > .n-card-content {
   overflow-y: auto;
 }
 
@@ -754,7 +767,7 @@ body,
   margin-top: 12px;
   overflow-y: auto;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .schedule-result-list > .n-spin,
@@ -776,7 +789,7 @@ body,
   border: 0;
   border-bottom: 1px solid var(--line-soft);
   background: var(--surface);
-  color: var(--ink);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
 }
@@ -826,7 +839,7 @@ body,
 .execution-card {
   padding: 13px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 12px;
 }
 
 .execution-card-head,
@@ -879,8 +892,8 @@ body,
   margin-top: 10px;
   padding: 10px;
   overflow: auto;
-  border-radius: 5px;
-  background: var(--ink);
+  border-radius: 6px;
+  background: var(--text);
   color: var(--line);
   font: 11px/1.55 "Fira Code", Consolas, monospace;
   white-space: pre-wrap;
@@ -903,8 +916,8 @@ body,
   padding: 64px clamp(40px, 6vw, 96px);
   overflow: hidden;
   background:
-    linear-gradient(rgba(22, 112, 75, 0.045) 1px, transparent 1px) 0 0 / 100% 44px,
-    linear-gradient(90deg, rgba(22, 112, 75, 0.045) 1px, transparent 1px) 0 0 / 44px 100%,
+    linear-gradient(rgba(0, 127, 50, 0.045) 1px, transparent 1px) 0 0 / 100% 44px,
+    linear-gradient(90deg, rgba(0, 127, 50, 0.045) 1px, transparent 1px) 0 0 / 44px 100%,
     radial-gradient(circle at 15% 12%, var(--soft) 0, transparent 42%),
     var(--page);
 }
@@ -962,11 +975,11 @@ body,
 /* 迷你甘特展示墙 */
 .gantt-wall {
   width: 100%;
-  padding: 18px 20px 22px;
+  padding: 16px 24px 24px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(16, 37, 26, 0.08);
+  box-shadow: 0 12px 40px rgba(41, 56, 47, 0.08);
 }
 
 .gantt-ruler {
@@ -1016,7 +1029,7 @@ body,
 
 .gantt-bar.done {
   background: linear-gradient(180deg, var(--accent), var(--accent-dark));
-  box-shadow: 0 1px 3px rgba(22, 112, 75, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 127, 50, 0.35);
 }
 
 .gantt-bar.done.dim {
@@ -1025,7 +1038,7 @@ body,
 
 .gantt-bar.running {
   background: linear-gradient(180deg, var(--accent-bright), var(--accent-hover));
-  box-shadow: 0 1px 3px rgba(22, 112, 75, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 127, 50, 0.35);
 }
 
 .gantt-bar.running::after {
@@ -1039,7 +1052,7 @@ body,
 
 .gantt-bar.queued {
   border: 1.5px dashed var(--accent-line);
-  background: rgba(22, 112, 75, 0.08);
+  background: rgba(0, 127, 50, 0.08);
 }
 
 .gantt-now-layer {
@@ -1155,7 +1168,7 @@ body,
   gap: 12px;
   padding: 9px 12px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--surface);
   color: inherit;
   text-align: left;
@@ -1177,7 +1190,7 @@ body,
 }
 
 .login-footnote {
-  margin: 18px 0 0;
+  margin: 16px 0 0;
   color: var(--faint);
   font-size: 11px;
   text-align: center;
@@ -1193,7 +1206,7 @@ body,
   }
 
   .login-showcase-inner {
-    gap: 20px;
+    gap: 24px;
   }
 
   .login-headline {
@@ -1252,7 +1265,7 @@ body,
 .my-task-filter-card,
 .my-task-table-card {
   max-width: 1680px;
-  margin: 0 auto 18px;
+  margin: 0 auto 24px;
 }
 
 .my-task-filters {
@@ -1290,14 +1303,14 @@ body,
       "list";
   }
 
-  .filter-panel .n-card__content {
+  .filter-panel .n-card-content {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
   }
 
   .filter-panel .filter-section,
-  .filter-panel > .n-card__content > .n-button {
+  .filter-panel > .n-card-content > .n-button {
     margin: 0;
   }
 
@@ -1308,6 +1321,10 @@ body,
 }
 
 @media (max-width: 700px) {
+  :root {
+    --section-inset: 8px;
+  }
+
   .app-content {
     padding: 14px 12px;
   }
@@ -1349,7 +1366,7 @@ body,
     flex-wrap: wrap !important;
   }
 
-  .filter-panel .n-card__content,
+  .filter-panel .n-card-content,
   .my-task-filters {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1398,7 +1415,7 @@ body,
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--text);
   font-size: 13px;
   line-height: 1.3;
   text-overflow: ellipsis;
@@ -1445,5 +1462,5 @@ body,
 }
 
 .vis-timeline .vis-labelset .vis-label:nth-child(even) {
-  background: rgba(16, 37, 26, 0.025);
+  background: rgba(41, 56, 47, 0.025);
 }

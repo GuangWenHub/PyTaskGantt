@@ -2,7 +2,7 @@
   <n-card size="small" :bordered="true">
     <template #header>
       <div>
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600;">
+        <div style="display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 18px; font-weight: 600;">
           <span>任务执行甘特图</span>
         </div>
         <div class="gantt-caption">按住 Ctrl + 鼠标滚轮可缩放，拖拽任务条可调整时间；点选/拖选顶部时间轴可冻结区间（Esc 或双击本标题栏解除）</div>
@@ -917,10 +917,10 @@ onBeforeUnmount(() => {
   pointer-events: none;
   min-width: 160px;
   padding: 8px 12px;
-  background: rgba(16, 37, 26, 0.94);
+  background: #29382F;
   color: #ffffff;
   border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(16, 37, 26, 0.18);
+  box-shadow: 0 6px 16px rgba(41, 56, 47, 0.18);
   font-size: 12px;
   line-height: 1.6;
   font-variant-numeric: tabular-nums;
@@ -1036,16 +1036,16 @@ onBeforeUnmount(() => {
 }
 /* 时间轴冻结高亮带（图表区）：半透明色块 + 两侧虚线；零宽（单击第一次）时靠 border 显示竖线 */
 .vis-item.freeze-band {
-  background-color: rgba(22, 112, 75, 0.12) !important;
-  border-left: 2px dashed rgba(22, 112, 75, 0.7) !important;
-  border-right: 2px dashed rgba(22, 112, 75, 0.7) !important;
+  background-color: rgba(0, 127, 50, 0.12) !important;
+  border-left: 2px dashed rgba(0, 127, 50, 0.7) !important;
+  border-right: 2px dashed rgba(0, 127, 50, 0.7) !important;
   box-sizing: border-box;
   pointer-events: none;
 }
 /* 拖选/待定中的预览态：比定稿更淡 */
 .vis-item.freeze-band.freeze-preview {
-  background-color: rgba(22, 112, 75, 0.07) !important;
-  border-color: rgba(22, 112, 75, 0.45) !important;
+  background-color: rgba(0, 127, 50, 0.07) !important;
+  border-color: rgba(0, 127, 50, 0.45) !important;
 }
 /* 时间轴上的高亮覆盖层：我们自己的 DOM（append 到 .vis-panel.vis-top），
    vis 重绘不会动它，位置按视窗百分比由 updateAxisOverlay 维护 */
@@ -1061,18 +1061,18 @@ onBeforeUnmount(() => {
   top: 0;
   bottom: 0;
   display: none;
-  background-color: rgba(22, 112, 75, 0.28);
-  border-left: 2px dashed rgba(22, 112, 75, 0.85);
-  border-right: 2px dashed rgba(22, 112, 75, 0.85);
+  background-color: rgba(0, 127, 50, 0.28);
+  border-left: 2px dashed rgba(0, 127, 50, 0.85);
+  border-right: 2px dashed rgba(0, 127, 50, 0.85);
   box-sizing: border-box;
 }
 .freeze-axis-band.freeze-preview {
-  background-color: rgba(22, 112, 75, 0.14);
-  border-color: rgba(22, 112, 75, 0.5);
+  background-color: rgba(0, 127, 50, 0.14);
+  border-color: rgba(0, 127, 50, 0.5);
 }
 /* 第一次单击后的待定竖线（贯穿图表区）；禁 pointer-events 防止被用户拖动 */
 .vis-custom-time.freeze-pending {
-  background-color: rgba(22, 112, 75, 0.85) !important;
+  background-color: rgba(0, 127, 50, 0.85) !important;
   width: 2px !important;
   pointer-events: none !important;
 }

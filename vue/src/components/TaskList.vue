@@ -9,7 +9,7 @@
       :pagination="{ pageSize: 10, size: 'small' }"
       :row-key="row => row.id"
       :row-class-name="row => row.can_edit ? '' : 'locked-task-row'"
-      :scroll-x="910"
+      :scroll-x="918"
       size="small"
       :bordered="false"
       striped
@@ -43,7 +43,7 @@ const columns = computed(() => [
     render: row => h('span', { class: 'owner-cell' }, row.owner?.display_name || '历史任务'),
   },
   {
-    title: '开始', key: 'start', width: 80,
+    title: '开始', key: 'start', width: 88,
     render: row => h('span', { class: 'time-chip' }, row.start.slice(0, 5)),
   },
   {
