@@ -50,7 +50,7 @@
           :data="filteredTasks"
           :pagination="{ pageSize: 15, showSizePicker: false }"
           :row-key="row => row.id"
-          :scroll-x="1710"
+          :scroll-x="1780"
           size="small"
           :single-line="false"
           striped
@@ -201,8 +201,8 @@ const columns = computed(() => [
     title: '标签', key: 'tags', width: 180,
     render: row => h(NSpace, { size: 4 }, () => (row.tags.length ? row.tags : ['—']).map(tag => h(NTag, { size: 'small', bordered: false }, () => tag))),
   },
-  { title: '时间', key: 'time', width: 150, render: row => `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
-  { title: 'Bot', key: 'bot', width: 120, ellipsis: { tooltip: true } },
+  { title: '时间', key: 'time', width: 190, render: row => `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
+  { title: 'Bot', key: 'bot', width: 150, ellipsis: { tooltip: true } },
   {
     title: '最新状态', key: 'normalized_status', width: 110,
     render: row => h(NTag, { size: 'small', bordered: false, type: statusType(row.normalized_status) }, () => row.normalized_status),

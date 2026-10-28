@@ -698,12 +698,6 @@ body,
   text-overflow: ellipsis;
 }
 
-.owner-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
 .responsive-modal {
   width: min(720px, calc(100vw - 24px));
   max-height: calc(100vh - 32px);
@@ -1427,11 +1421,18 @@ body,
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
-  max-width: 64px;
-  overflow: hidden;
+  min-width: 0;
+  max-width: 72px;
   color: var(--faint);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* 长人名省略显示，完整信息在整行 title 提示里 */
+.gantt-label-owner-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gantt-label-owner svg {

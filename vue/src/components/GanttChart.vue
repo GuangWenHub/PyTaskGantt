@@ -601,7 +601,10 @@ function buildGroupLabel(t) {
   const owner = document.createElement('span')
   owner.className = 'gantt-label-owner'
   if (!t.can_edit) owner.appendChild(createLockIcon())
-  owner.append(t.owner?.display_name || '历史')
+  const ownerText = document.createElement('span')
+  ownerText.className = 'gantt-label-owner-name'
+  ownerText.textContent = t.owner?.display_name || '历史'
+  owner.appendChild(ownerText)
 
   row.append(dot, name, owner)
   return row

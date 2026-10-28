@@ -22,7 +22,7 @@
           <template v-if="!auth.user?.avatar_url">{{ initials }}</template>
           <template #fallback>{{ initials }}</template>
         </n-avatar>
-        <span class="header-user-name">{{ auth.user?.display_name || '当前用户' }}</span>
+        <span class="header-user-name" :title="auth.user?.display_name || ''">{{ auth.user?.display_name || '当前用户' }}</span>
         <n-tag v-if="auth.user?.is_admin" size="small" type="error" :bordered="false">管理员</n-tag>
         <n-button
           v-if="auth.feishuEnabled && !auth.user?.feishu_bound"

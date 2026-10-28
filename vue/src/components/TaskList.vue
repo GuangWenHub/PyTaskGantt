@@ -9,7 +9,7 @@
       :pagination="{ pageSize: 10, size: 'small' }"
       :row-key="row => row.id"
       :row-class-name="row => row.can_edit ? '' : 'locked-task-row'"
-      :scroll-x="918"
+      :scroll-x="988"
       size="small"
       :bordered="false"
       striped
@@ -39,8 +39,9 @@ const columns = computed(() => [
     },
   },
   {
-    title: '所有者', key: 'owner', width: 100, ellipsis: { tooltip: true },
-    render: row => h('span', { class: 'owner-cell' }, row.owner?.display_name || '历史任务'),
+    // 渲染纯文本：NaiveUI 的 ellipsis 只对行内文本生效，包一层 inline-flex 会直接截断且没有省略号/提示
+    title: '所有者', key: 'owner', width: 170, ellipsis: { tooltip: true },
+    render: row => row.owner?.display_name || '历史任务',
   },
   {
     title: '开始', key: 'start', width: 88,
