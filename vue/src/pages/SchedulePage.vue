@@ -12,12 +12,12 @@
       <div class="schedule-layout" :style="{ '--schedule-main-height': mainHeight ? `${mainHeight}px` : 'auto' }">
         <div ref="mainElement" class="schedule-main">
           <GanttChart
-            :tasks="filteredTasks"
+            :tasks="projectedTasks"
             @task-click="handleTaskClick"
             @task-update="handleGanttUpdate"
           />
           <TaskList
-            :tasks="filteredTasks"
+            :tasks="projectedTasks"
             :can-recover="Boolean(auth.user?.is_admin)"
             @edit="openEdit"
             @delete="confirmDelete"
@@ -35,6 +35,8 @@
             v-model:selected-bots="selectedBots"
             v-model:selected-owners="selectedOwners"
             v-model:sort-by="sortBy"
+            :show-shared-tasks="showSharedTasks"
+            @update:show-shared-tasks="saveSharedTaskPreference"
             :all-bots="allBots"
             :all-owners="allOwners"
             :filtered-count="filteredTasks.length"
@@ -135,6 +137,8 @@ import TaskList from '../components/TaskList.vue'
 import TaskHistoryCard from '../components/TaskHistoryCard.vue'
 import { auth } from '../services/authService.js'
 import { filterTasks, formatDateTime, summarizeSyncCutoff } from '../services/dataService.js'
+import { candidateNames, projectSharedTasks, sourceTask } from '../../shared/scheduleDispatch.mjs'
+import { useSharedTaskPreference } from '../services/sharedTaskPreference.js'
 import {
   exportTasks,
   getUsers,
@@ -166,6 +170,7 @@ const searchTerm = ref('')
 const selectedBots = ref([])
 const selectedOwners = ref([])
 const sortBy = ref('bot')
+const { enabled: showSharedTasks, save: saveSharedTaskPreference } = useSharedTaskPreference()
 const editorVisible = ref(false)
 const editorMode = ref('create')
 const editingTask = ref(null)
@@ -194,7 +199,7 @@ const syncCutoffText = computed(() => {
   return `${formatDateTime(cutoff.timestamp)}${cutoff.incomplete ? '（部分任务尚未同步）' : ''}`
 })
 
-const allBots = computed(() => [...new Set(store.tasks.value.map(task => task.bot).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
+const allBots = computed(() => [...new Set(store.tasks.value.flatMap(candidateNames).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
 const allTags = computed(() => [...new Set(store.tasks.value.flatMap(task => task.tags || []))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
 const allOwners = computed(() => {
   const map = new Map()
@@ -209,6 +214,10 @@ const filteredTasks = computed(() => filterTasks(store.tasks.value, {
   selectedBots: selectedBots.value,
   selectedOwners: selectedOwners.value,
   sortBy: sortBy.value,
+  showSharedTasks: showSharedTasks.value,
+}))
+const projectedTasks = computed(() => filterTasks(projectSharedTasks(filteredTasks.value), {
+  selectedBots: selectedBots.value, sortBy: sortBy.value, preserveDecoration: true,
 }))
 const historyTaskIds = computed(() => filteredTasks.value.map(task => String(task.id)).sort().join(','))
 const reservedScheduleUuids = computed(() => store.tasks.value
@@ -261,6 +270,7 @@ function openCreate() {
 }
 
 function openEdit(task) {
+  task = sourceTask(task)
   if (!task.can_edit) return message.warning('该任务属于其他用户或为历史未绑定任务，仅可查看。')
   editorMode.value = 'edit'
   editingTask.value = { ...task, tags: [...(task.tags || [])] }

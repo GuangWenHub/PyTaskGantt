@@ -1,9 +1,11 @@
 import { computed, reactive, readonly } from 'vue'
 import { getMyTasks, getTasks, normalizeTask, saveTaskMutations } from '../services/taskService.js'
 
-const CREATE_FIELDS = ['task', 'start', 'finish', 'bot', 'schedule_uuid', 'tags', 'note']
-const UPDATE_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note']
-const LIVE_FIELDS = ['normalized_status', 'last_run_at', 'last_synced_at', 'sync_error']
+const CREATE_FIELDS = ['task', 'start', 'finish', 'bot', 'schedule_uuid', 'tags', 'note', 'timing_mode', 'expected_duration_seconds']
+const UPDATE_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note', 'timing_mode', 'expected_duration_seconds']
+const CRON_CACHE_FIELDS = ['schedule_cron_expression', 'schedule_cron_synced_at', 'schedule_cron_error']
+const DISPATCH_CACHE_FIELDS = ['schedule_dispatch', 'schedule_dispatch_synced_at', 'schedule_dispatch_error']
+const LIVE_FIELDS = ['normalized_status', 'last_run_at', 'last_synced_at', 'sync_error', ...CRON_CACHE_FIELDS, ...DISPATCH_CACHE_FIELDS]
 
 function cloneTask(task) {
   return { ...task, tags: [...(task.tags || [])], owner: task.owner ? { ...task.owner } : null }
@@ -109,7 +111,10 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
       serverMap.delete(key)
       if (mutation) {
         const merged = cloneTask(draft)
-        for (const field of LIVE_FIELDS) merged[field] = serverTask[field]
+        for (const field of LIVE_FIELDS) {
+          if (CRON_CACHE_FIELDS.includes(field) && draft.timing_mode !== serverTask.timing_mode) continue
+          merged[field] = serverTask[field]
+        }
         next.push(merged)
       } else {
         next.push(cloneTask(serverTask))
@@ -190,7 +195,7 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
     const index = state.tasks.findIndex(task => taskKey(task.id) === key)
     if (index < 0 || !state.tasks[index].can_edit) return null
     const allowedFields = state.tasks[index]._is_new || key.startsWith('tmp:') ? CREATE_FIELDS : UPDATE_FIELDS
-    const patch = pickFields(updates, allowedFields)
+    const patch = pickFields(updates, [...allowedFields, ...CRON_CACHE_FIELDS, ...DISPATCH_CACHE_FIELDS])
     if ('tags' in patch) patch.tags = normalizeTags(patch.tags)
     state.tasks[index] = normalizeTask({ ...state.tasks[index], ...patch })
     const task = state.tasks[index]

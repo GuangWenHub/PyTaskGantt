@@ -17,6 +17,8 @@ function normalizeImportedTask(raw, index, csv = false) {
     tags: normalizeTags(raw.tags ?? raw.Tags, csv),
     note: String(raw.note ?? raw.Note ?? '').trim(),
   };
+  if (raw.timing_mode != null || raw.TimingMode != null) task.timing_mode = String(raw.timing_mode ?? raw.TimingMode).trim();
+  if (raw.expected_duration_seconds != null || raw.ExpectedDurationSeconds != null) task.expected_duration_seconds = Number(raw.expected_duration_seconds ?? raw.ExpectedDurationSeconds);
   const missing = ['task', 'start', 'finish', 'bot', 'schedule_uuid'].filter(key => !task[key]);
   if (missing.length) {
     throw new ValidationError(`导入第 ${index + 1} 条记录缺少字段：${missing.join(', ')}`);
@@ -55,6 +57,8 @@ function exportTasks(tasks, format) {
     ScheduleUuid: item.schedule_uuid || '',
     Tags: (item.tags || []).join(';'),
     Note: item.note || '',
+    TimingMode: item.timing_mode || 'single',
+    ExpectedDurationSeconds: item.expected_duration_seconds || 60,
   }));
   if (format === 'json') {
     return { contentType: 'application/json; charset=utf-8', body: JSON.stringify(rows, null, 2) };

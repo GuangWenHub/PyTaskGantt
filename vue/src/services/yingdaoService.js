@@ -1,5 +1,13 @@
 import { apiRequest, toQuery } from './apiClient.js'
 
+export function getScheduleDispatch(uuid) {
+  return apiRequest(`/yingdao/schedules/${encodeURIComponent(uuid)}/dispatch`)
+}
+
+export function getScheduleCron(uuid) {
+  return apiRequest(`/yingdao/schedules/${encodeURIComponent(uuid)}/cron`)
+}
+
 function optionalNumber(...values) {
   for (const value of values) {
     if (value == null || value === '') continue

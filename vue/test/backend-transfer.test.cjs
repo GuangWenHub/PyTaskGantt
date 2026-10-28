@@ -37,7 +37,7 @@ describe('任务导入导出', () => {
       schedule_uuid: 's-1', tags: ['每日', '财务'], note: '跨天运行',
     };
     const output = exportTasks([task], 'json');
-    expect(parseTaskImport(output.body, 'json')).toEqual([task]);
+    expect(parseTaskImport(output.body, 'json')).toEqual([{ ...task, timing_mode: 'single', expected_duration_seconds: 60 }]);
   });
 
   it('JSON 继续兼容标签数组和旧版逗号分隔的标签', () => {

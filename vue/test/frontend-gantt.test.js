@@ -80,6 +80,7 @@ vi.mock('vis-timeline/standalone', () => ({
 }))
 
 import GanttChart from '../src/components/GanttChart.vue'
+import { projectSharedTasks } from '../shared/scheduleDispatch.mjs'
 
 function task(overrides = {}) {
   return {
@@ -95,6 +96,62 @@ function task(overrides = {}) {
 }
 
 describe('GanttChart ownership boundary', () => {
+  it('候选机器投影身份独立、禁止拖拽，点击时恢复源任务机器字段', () => {
+    const source = task({ schedule_dispatch: { execute_scope: 'any', clients: [{ id: 'a', name: 'admin@tenant' }, { id: 'b', name: 'bot_1@tenant' }] } })
+    const rows = projectSharedTasks([source])
+    const wrapper = mount(GanttChart, { props: { tasks: rows } })
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.items.getIds()).toHaveLength(2)
+    for (const row of rows) {
+      const item = timeline.items.get(row.view_id)
+      expect(item.editable).toBe(false)
+      expect(item.className).toContain('shared-candidate')
+      const callback = vi.fn()
+      timeline.options.onMove(item, callback)
+      expect(callback).toHaveBeenCalledWith(null)
+      timeline.handlers.click({ item: row.view_id, what: 'item' })
+    }
+    expect(wrapper.emitted('task-update')).toBeUndefined()
+    expect(wrapper.emitted('task-click')).toEqual([[source], [source]])
+    wrapper.unmount()
+  })
+  it('循环任务保留一行，多次触发不可拖拽，点击仍编辑完整任务', async () => {
+    const recurring = task({ timing_mode: 'cron', schedule_cron_expression: '0 0-8/2 * * *', expected_duration_seconds: 60, start: '00:00:00', finish: '08:00:00' })
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [recurring] },
+      global: { stubs: { NCard: { template: '<section><slot/><slot name="header-extra"/></section>' }, NSpace: true, NButton: true, NEmpty: true, teleport: true } },
+    })
+    await nextTick()
+    const timeline = timelineState.instances.at(-1)
+    const items = timeline.items.getIds().map(id => timeline.items.get(id))
+    expect(items).toHaveLength(5)
+    expect(timeline.groups.getIds()).toHaveLength(1)
+    expect(items.map(item => item.start.getHours())).toEqual([0, 2, 4, 6, 8])
+    expect(items.at(-1).end.getMinutes()).toBe(1)
+    const callback = vi.fn()
+    timeline.options.onMove(items[0], callback)
+    expect(callback).toHaveBeenCalledWith(null)
+    expect(wrapper.emitted('task-update')).toBeUndefined()
+    timeline.handlers.click({ item: items.at(-1).id, what: 'item' })
+    expect(wrapper.emitted('task-click')[0][0]).toMatchObject({ id: '1', start: '00:00:00', finish: '08:00:00', timing_mode: 'cron' })
+    wrapper.unmount()
+  })
+  it('高密度规则随视窗聚合和展开，规则缺失时不伪造单段时间条', async () => {
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [task({ timing_mode: 'cron', schedule_cron_expression: '* * * * *', expected_duration_seconds: 120 }), task({ id: '2', timing_mode: 'cron' })] },
+      global: { stubs: { NCard: { template: '<section><slot/></section>' }, NSpace: true, NButton: true, NEmpty: true, teleport: true } },
+    })
+    await nextTick()
+    const timeline = timelineState.instances.at(-1)
+    timeline.setWindow(new Date('2025-01-01T00:00:00'), new Date('2025-01-02T00:00:00'))
+    expect(timeline.items.getIds()).toHaveLength(120)
+    expect(timeline.items.get('1:cron:0')._cron_count).toBe(12)
+    timeline.setWindow(new Date('2025-01-01T23:55:00'), new Date('2025-01-02T00:00:00'))
+    expect(timeline.items.getIds()).toHaveLength(1440)
+    expect(timeline.items.get('1:cron:86340').end).toEqual(new Date('2025-01-02T00:01:00'))
+    expect(timeline.groups.get('2').content).toContain('规则待同步')
+    wrapper.unmount()
+  })
   beforeEach(() => {
     document.cookie = 'pytaskgantt.timelineAutoScroll=; Max-Age=0; Path=/'
     timelineState.instances.length = 0
@@ -167,7 +224,7 @@ describe('GanttChart ownership boundary', () => {
     wrapper.unmount()
   })
 
-  it('切回标签页或窗口恢复焦点时按新时间定位，合并重复事件；关闭和卸载后不触发', async () => {
+  it('切回标签页或恢复焦点保留用户视窗，重新加载组件才按当前时间定位', async () => {
     document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
     const wrapper = mount(GanttChart, {
@@ -182,41 +239,49 @@ describe('GanttChart ownership boundary', () => {
     await frames()
     const timeline = timelineState.instances.at(-1)
     expect(timeline.setWindowCalls).toBe(1)
+    const chosenWindow = { start: new Date('2025-01-01T09:00:00'), end: new Date('2025-01-01T10:00:00') }
+    timeline.setWindow(chosenWindow.start, chosenWindow.end)
     window.dispatchEvent(new Event('blur'))
     visibility.mockReturnValue('hidden')
     document.dispatchEvent(new Event('visibilitychange'))
     vi.setSystemTime(new Date('2026-10-20T06:10:00Z'))
     window.dispatchEvent(new Event('focus'))
     await frames()
-    expect(timeline.setWindowCalls).toBe(1)
+    expect(timeline.setWindowCalls).toBe(2)
     visibility.mockReturnValue('visible')
     document.dispatchEvent(new Event('visibilitychange'))
     window.dispatchEvent(new Event('focus'))
     await frames()
     expect(timeline.setWindowCalls).toBe(2)
-    expect(timeline.window).toEqual(getCurrentTimeWindow())
-    // Already centered: a new activation does not replay the animation.
+    expect(timeline.window).toEqual(chosenWindow)
     window.dispatchEvent(new Event('blur'))
     window.dispatchEvent(new Event('focus'))
     await frames()
     expect(timeline.setWindowCalls).toBe(2)
-    // Window focus alone also works after time has advanced.
     window.dispatchEvent(new Event('blur'))
     vi.setSystemTime(new Date('2026-10-20T06:20:00Z'))
     window.dispatchEvent(new Event('focus'))
     await frames()
-    expect(timeline.setWindowCalls).toBe(3)
-    await wrapper.findAll('button').find(button => button.text() === '自动滚动').trigger('click')
-    window.dispatchEvent(new Event('blur'))
-    vi.setSystemTime(new Date('2026-10-20T06:30:00Z'))
-    window.dispatchEvent(new Event('focus'))
-    await frames()
-    expect(timeline.setWindowCalls).toBe(3)
+    expect(timeline.setWindowCalls).toBe(2)
+    expect(timeline.window).toEqual(chosenWindow)
     wrapper.unmount()
     window.dispatchEvent(new Event('blur'))
     window.dispatchEvent(new Event('focus'))
     await frames()
-    expect(timeline.setWindowCalls).toBe(3)
+    expect(timeline.setWindowCalls).toBe(2)
+    const reloaded = mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    await frames()
+    const refreshedTimeline = timelineState.instances.at(-1)
+    expect(refreshedTimeline.setWindowCalls).toBe(1)
+    expect(refreshedTimeline.window).toEqual(getCurrentTimeWindow())
+    reloaded.unmount()
     visibility.mockRestore()
   })
 

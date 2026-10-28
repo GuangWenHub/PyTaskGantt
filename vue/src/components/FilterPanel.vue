@@ -46,6 +46,12 @@
       </div>
 
       <div class="filter-control">
+        <n-button size="small" :tertiary="!showSharedTasks" :type="showSharedTasks ? 'primary' : 'default'" :aria-pressed="showSharedTasks" @click="$emit('update:showSharedTasks', !showSharedTasks)" title="显示各候选机器下的共享任务；设置保存在此浏览器一年">
+          显示共享任务
+        </n-button>
+      </div>
+
+      <div class="filter-control">
         <label>所有者</label>
         <n-select
           :value="selectedOwners"
@@ -103,6 +109,7 @@ const props = defineProps({
   selectedBots: { type: Array, default: () => [] },
   selectedOwners: { type: Array, default: () => [] },
   sortBy: { type: String, default: 'bot' },
+  showSharedTasks: { type: Boolean, default: false },
   allBots: { type: Array, default: () => [] },
   allOwners: { type: Array, default: () => [] },
   filteredCount: { type: Number, default: 0 },
@@ -114,6 +121,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:searchTerm', 'update:selectedBots', 'update:selectedOwners', 'update:sortBy',
+  'update:showSharedTasks',
   'refresh', 'import', 'export', 'create', 'save',
 ])
 

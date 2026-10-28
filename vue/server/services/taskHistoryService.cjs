@@ -11,6 +11,8 @@ const snapshotSchema = z.object({
   start: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/),
   finish: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/),
   bot: z.string().min(1).max(100), tags: z.array(z.string().max(50)).max(20), note: z.string().max(2000),
+  timing_mode: z.enum(['single', 'cron']).optional().default('single'),
+  expected_duration_seconds: z.number().int().min(1).max(86400).optional().default(60),
   owner_user_id: z.string().refine(isValidBigintId).nullable(),
   schedule_uuid: z.string().min(1).max(200).nullable(), bound: z.boolean(), deleted: z.boolean(),
 }).strict().refine(s => (s.schedule_uuid == null) === !s.bound && (!s.deleted || !s.bound));
@@ -149,13 +151,21 @@ function createTaskHistoryService({ pool, historyRepository, scheduleDirectory }
         const { rows } = await client.query(
           `UPDATE public.rpa_tasks SET task = $2, start_time = $3, finish_time = $4,
              bot = $5, tags = $6::text[], note = $7, owner_user_id = $8, schedule_uuid = $9,
+             timing_mode = $15, expected_duration_seconds = $16,
              schedule_bound_at = $10, deleted_at = $11, version = version + 1, updated_at = $12,
              sync_generation = sync_generation + CASE WHEN $13 THEN 1 ELSE 0 END,
              last_synced_at = CASE WHEN $13 THEN NULL ELSE last_synced_at END,
-             sync_error = CASE WHEN $13 THEN NULL ELSE sync_error END
+             sync_error = CASE WHEN $13 THEN NULL ELSE sync_error END,
+             schedule_cron_expression = CASE WHEN $13 THEN NULL ELSE schedule_cron_expression END,
+             schedule_cron_synced_at = CASE WHEN $13 THEN NULL ELSE schedule_cron_synced_at END,
+             schedule_cron_error = CASE WHEN $13 THEN NULL ELSE schedule_cron_error END,
+             schedule_dispatch = CASE WHEN $13 THEN '{}'::jsonb ELSE schedule_dispatch END,
+             schedule_dispatch_synced_at = CASE WHEN $13 THEN NULL ELSE schedule_dispatch_synced_at END,
+             schedule_dispatch_error = CASE WHEN $13 THEN NULL ELSE schedule_dispatch_error END
            WHERE id = $1 AND version = $14 RETURNING *`,
           [current.id, target.task, target.start, target.finish, target.bot, target.tags, target.note,
-            target.owner_user_id, scheduleUuid, boundAt, target.deleted ? changedAt : null, changedAt, bindingChanged, version]
+            target.owner_user_id, scheduleUuid, boundAt, target.deleted ? changedAt : null, changedAt, bindingChanged, version,
+            target.timing_mode, target.expected_duration_seconds]
         );
         if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
         const auditId = await addAudit(client, {

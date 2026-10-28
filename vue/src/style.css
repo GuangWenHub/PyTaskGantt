@@ -671,6 +671,38 @@ body,
   width: min(680px, calc(100vw - 24px));
 }
 
+.gantt-container .vis-item.shared-candidate {
+  opacity: .35;
+  border-style: dashed;
+  cursor: pointer;
+}
+.gantt-container .vis-item.shared-candidate:hover,
+.gantt-container .vis-item.shared-candidate.vis-selected { opacity: .8; }
+.gantt-container .vis-label.shared-candidate-label { opacity: .6; }
+.task-list-card .shared-candidate-row { opacity: .5; }
+.task-list-card .shared-candidate-row:hover { opacity: .9; }
+.task-list-card .shared-candidate-row .n-data-table-td:first-child { border-left: 2px dashed #9ab5d8; }
+
+.task-editor-modal.n-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+
+.task-editor-modal > .n-card-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.task-editor-modal > .n-card-header,
+.task-editor-modal > .n-card__footer {
+  flex-shrink: 0;
+}
+
 .editor-alert {
   margin: 0 0 16px;
 }

@@ -4,7 +4,10 @@ const { resolveExecutor, withTransaction } = require('./repositoryUtils.cjs');
 const TASK_RETURNING_COLUMNS = `
   id, task, start_time, finish_time, bot,
   created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at,
-  tags, note, version, last_synced_at, sync_error,
+  tags, note, timing_mode, expected_duration_seconds,
+  schedule_cron_expression, schedule_cron_synced_at, schedule_cron_error,
+  schedule_dispatch, schedule_dispatch_synced_at, schedule_dispatch_error,
+  version, last_synced_at, sync_error,
   created_at, updated_at, deleted_at`;
 
 const TASK_LIST_SELECT = `
@@ -12,7 +15,9 @@ const TASK_LIST_SELECT = `
     task.id, task.task, task.start_time, task.finish_time, task.bot,
     task.created_by_user_id, task.owner_user_id,
     task.schedule_uuid, task.schedule_bound_at,
-    task.tags, task.note, task.version,
+    task.tags, task.note, task.timing_mode, task.expected_duration_seconds,
+    task.schedule_cron_expression, task.schedule_cron_synced_at, task.schedule_cron_error, task.version,
+    task.schedule_dispatch, task.schedule_dispatch_synced_at, task.schedule_dispatch_error,
     task.last_synced_at, task.sync_error,
     task.created_at, task.updated_at, task.deleted_at,
     owner.id AS owner_id,
@@ -158,8 +163,8 @@ function createTasksRepository(db) {
         `INSERT INTO public.rpa_tasks (
            task, start_time, finish_time, bot,
            created_by_user_id, owner_user_id,
-           schedule_uuid, schedule_bound_at, tags, note
-         ) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::text[], $9)
+           schedule_uuid, schedule_bound_at, tags, note, timing_mode, expected_duration_seconds
+         ) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::text[], $9, $10, $11)
          RETURNING ${TASK_RETURNING_COLUMNS}`,
         [
           data.task,
@@ -171,6 +176,8 @@ function createTasksRepository(db) {
           boundAt,
           tags,
           data.note || '',
+          data.timingMode || 'single',
+          data.expectedDurationSeconds ?? 60,
         ]
       );
       await client.query(
@@ -192,6 +199,8 @@ function createTasksRepository(db) {
       bot: 'bot',
       tags: 'tags',
       note: 'note',
+      timing_mode: 'timing_mode',
+      expected_duration_seconds: 'expected_duration_seconds',
     };
     const assignments = [];
     const params = [id, ownerUserId, version];
@@ -305,6 +314,12 @@ function createTasksRepository(db) {
                 schedule_bound_at = $3,
                 last_synced_at = NULL,
                 sync_error = NULL,
+                schedule_cron_expression = NULL,
+                schedule_cron_synced_at = NULL,
+                schedule_cron_error = NULL,
+                schedule_dispatch = '{}'::jsonb,
+                schedule_dispatch_synced_at = NULL,
+                schedule_dispatch_error = NULL,
                 version = version + 1
           WHERE id = $1
         RETURNING ${TASK_RETURNING_COLUMNS}`,
@@ -459,6 +474,35 @@ function createTasksRepository(db) {
     return mapTaskRow(rows[0]);
   }
 
+  async function updateScheduleCron(attempt, { expression = null, error = null, syncedAt = new Date() }) {
+    const { rows } = await db.query(
+      `UPDATE public.rpa_tasks SET
+         schedule_cron_expression = CASE WHEN $5::text IS NULL THEN $4 ELSE schedule_cron_expression END,
+         schedule_cron_synced_at = CASE WHEN $5::text IS NULL THEN $6 ELSE schedule_cron_synced_at END,
+         schedule_cron_error = $5
+       WHERE id = $1 AND schedule_uuid = $2 AND deleted_at IS NULL
+         AND date_trunc('milliseconds', schedule_bound_at) IS NOT DISTINCT FROM $3::timestamptz
+         AND sync_generation = $7::bigint AND timing_mode = 'cron'
+       RETURNING id`,
+      [attempt.taskId, attempt.scheduleUuid, attempt.scheduleBoundAt, expression, error, syncedAt, attempt.syncGeneration]
+    );
+    return rows[0] || null;
+  }
+
+  async function updateScheduleDispatch(attempt, { dispatch = {}, error = null, syncedAt = new Date() }) {
+    const { rows } = await db.query(
+      `UPDATE public.rpa_tasks SET
+         schedule_dispatch = CASE WHEN $5::text IS NULL THEN $4::jsonb ELSE schedule_dispatch END,
+         schedule_dispatch_synced_at = CASE WHEN $5::text IS NULL THEN $6 ELSE schedule_dispatch_synced_at END,
+         schedule_dispatch_error = $5
+       WHERE id = $1 AND schedule_uuid = $2 AND deleted_at IS NULL
+         AND date_trunc('milliseconds', schedule_bound_at) IS NOT DISTINCT FROM $3::timestamptz
+         AND sync_generation = $7::bigint RETURNING id`,
+      [attempt.taskId, attempt.scheduleUuid, attempt.scheduleBoundAt, JSON.stringify(dispatch), error, syncedAt, attempt.syncGeneration]
+    );
+    return rows[0] || null;
+  }
+
   return Object.freeze({
     listVisibleTasks,
     listAll: (currentUserId, options = {}) => listVisibleTasks({ currentUserId, ...options }),
@@ -478,6 +522,8 @@ function createTasksRepository(db) {
     findBindingForScheduleAt,
     beginSyncAttempt,
     updateSyncState,
+    updateScheduleCron,
+    updateScheduleDispatch,
   });
 }
 

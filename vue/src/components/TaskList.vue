@@ -1,14 +1,14 @@
 <template>
   <n-card title="任务列表" size="small" :bordered="true" class="task-list-card">
-    <template #header-extra><n-text depth="3">共 {{ tasks.length }} 条</n-text></template>
+    <template #header-extra><n-text depth="3">共 {{ taskCount }} 条<span v-if="tasks.length !== taskCount"> · {{ tasks.length }} 个展示条目</span></n-text></template>
     <n-empty v-if="!tasks.length" description="暂无符合条件的任务" class="table-empty" />
     <n-data-table
       v-else
       :columns="columns"
       :data="tasks"
       :pagination="{ pageSize: 10, size: 'small' }"
-      :row-key="row => row.id"
-      :row-class-name="row => row.can_edit ? '' : 'locked-task-row'"
+      :row-key="row => row.view_id || row.id"
+      :row-class-name="row => [row.can_edit ? '' : 'locked-task-row', row.shared_candidate ? 'shared-candidate-row' : ''].join(' ')"
       :scroll-x="1120"
       size="small"
       :bordered="false"
@@ -22,19 +22,25 @@
 import { computed, h } from 'vue'
 import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NTag, NText } from 'naive-ui'
 import { statusType } from '../services/dataService.js'
+import { sourceTask } from '../../shared/scheduleDispatch.mjs'
 
 const props = defineProps({
   tasks: { type: Array, required: true },
   canRecover: { type: Boolean, default: false },
 })
-const emit = defineEmits(['edit', 'delete', 'history', 'run', 'sync', 'rebind', 'transfer', 'recover'])
+const dispatch = defineEmits(['edit', 'delete', 'history', 'run', 'sync', 'rebind', 'transfer', 'recover'])
+const emit = (event, row) => dispatch(event, sourceTask(row))
+const taskCount = computed(() => new Set(props.tasks.map(row => row.id)).size)
 
 const columns = computed(() => [
   {
     title: '任务名称', key: 'task', minWidth: 180, ellipsis: { tooltip: true },
     render(row) {
       return h('div', { class: 'task-name-cell' }, [
+        row.shared_candidate ? h(NTag, { size: 'small', bordered: false, title: `候选机器：${row.candidate_client.name}` }, () => '共享 · 任选1台') : null,
+        row.timing_mode === 'cron' ? h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🔁') : null,
         h('span', row.task),
+        row.timing_mode === 'cron' ? h('small', { title: row.schedule_cron_expression || row.schedule_cron_error || '', style: 'white-space:normal;color:#888' }, row.cronSummary) : null,
         row.is_legacy_unbound ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '待绑定/只读') : null,
       ])
     },
@@ -45,11 +51,12 @@ const columns = computed(() => [
   },
   {
     title: '开始', key: 'start', width: 88,
-    render: row => h('span', { class: 'time-chip' }, row.start.slice(0, 5)),
+    render: row => h('span', { class: 'time-chip' }, row.timing_mode === 'cron' ? 'Cron' : row.start.slice(0, 5)),
   },
   {
     title: '结束', key: 'finish', width: 105,
     render(row) {
+      if (row.timing_mode === 'cron') return h('span', { title: row.schedule_cron_expression || '' }, `每次 ${row.expected_duration_seconds} 秒`)
       return h(NSpace, { size: 4, wrap: false }, () => [
         h('span', { class: 'time-chip' }, row.finish.slice(0, 5)),
         row.crossDay ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '次日') : null,

@@ -1,3 +1,5 @@
+import { cronTemplateSummary, parseYingdaoCron } from '../../shared/yingdaoCron.mjs'
+import { isSharedTask, candidateNames } from '../../shared/scheduleDispatch.mjs'
 export const DUMMY_DATE = '2025-01-01'
 export const DEFAULT_TIMELINE_WINDOW_MS = 5 * 60 * 60 * 1000
 
@@ -96,7 +98,7 @@ export function createBotColorMap(botNames = []) {
   }))
 }
 
-// 任务周期 emoji：仅依据 tags 数组（子串匹配），不解析任务名。
+// 循环模式显示 🔁；其他周期依据 tags 数组，不解析任务名。
 // 顺序固定 ☀️→⭐→🌙，不跟随 tags 数组顺序，保证同含义显示一致。
 // 返回 { badge: string, faded: boolean }
 //   badge: emoji 字符串（无匹配返回空串）
@@ -107,7 +109,8 @@ const FREQ_RULES = [
   { match: '每月', emoji: '🌙' },
 ]
 
-export function getTaskFrequencyBadge(tags = []) {
+export function getTaskFrequencyBadge(tags = [], timingMode = 'single') {
+  if (timingMode === 'cron') return { badge: '🔁', faded: false }
   if (!Array.isArray(tags) || !tags.length) return { badge: '', faded: false }
   const joined = tags.map(t => String(t || '').trim()).filter(Boolean)
   if (!joined.length) return { badge: '', faded: false }
@@ -129,12 +132,18 @@ export function getTaskFrequencyBadge(tags = []) {
 }
 
 export function decorateTask(task, color = getBotColor(task.bot)) {
-  const freq = getTaskFrequencyBadge(task.tags)
+  const freq = getTaskFrequencyBadge(task.tags, task.timing_mode)
+  let triggerSeconds = []
+  if (task.timing_mode === 'cron') {
+    try { triggerSeconds = parseYingdaoCron(task.schedule_cron_expression).seconds } catch { /* Wait for a valid remote rule. */ }
+  }
   return {
     ...task,
-    duration: formatDuration(task.start, task.finish),
+    duration: task.timing_mode === 'cron' ? `单次预计 ${task.expected_duration_seconds || 60} 秒` : formatDuration(task.start, task.finish),
+    cronSummary: task.timing_mode === 'cron' ? cronTemplateSummary(task.schedule_cron_expression, task.expected_duration_seconds || 60) : '',
     color,
-    crossDay: isCrossDay(task.start, task.finish),
+    crossDay: task.timing_mode === 'cron' ? triggerSeconds.some(second => second + (task.expected_duration_seconds || 60) >= 86400) : isCrossDay(task.start, task.finish),
+    sortStartMinutes: task.timing_mode === 'cron' ? (triggerSeconds[0] ?? 86400) / 60 : timeToMinutes(task.start),
     freqBadge: freq.badge,
     freqFaded: freq.faded,
   }
@@ -145,23 +154,26 @@ export function filterTasks(tasks, {
   selectedBots = [],
   selectedOwners = [],
   sortBy = 'bot',
+  showSharedTasks = true,
+  preserveDecoration = false,
 } = {}) {
   const botColors = createBotColorMap(tasks.map(task => task.bot))
-  let rows = tasks.map(task => decorateTask(task, botColors.get(String(task.bot || '').trim().normalize('NFKC'))))
+  let rows = preserveDecoration ? [...tasks] : tasks.map(task => decorateTask(task, botColors.get(String(task.bot || '').trim().normalize('NFKC'))))
   const term = searchTerm.trim().toLocaleLowerCase('zh-CN')
   if (term) rows = rows.filter(task => task.task.toLocaleLowerCase('zh-CN').includes(term))
-  if (selectedBots.length) rows = rows.filter(task => selectedBots.includes(task.bot))
+  if (!showSharedTasks) rows = rows.filter(task => !isSharedTask(task))
+  if (selectedBots.length) rows = rows.filter(task => candidateNames(task).some(bot => selectedBots.includes(bot)))
   if (selectedOwners.length) {
     rows = rows.filter(task => selectedOwners.includes(task.owner?.id || 'legacy'))
   }
   rows.sort((left, right) => {
-    if (sortBy === 'time') return timeToMinutes(left.start) - timeToMinutes(right.start)
+    if (sortBy === 'time') return left.sortStartMinutes - right.sortStartMinutes
     if (sortBy === 'owner') {
       const owner = (left.owner?.display_name || '').localeCompare(right.owner?.display_name || '', 'zh-CN')
       if (owner) return owner
     }
     const bot = left.bot.localeCompare(right.bot, 'zh-CN')
-    return bot || timeToMinutes(left.start) - timeToMinutes(right.start)
+    return bot || left.sortStartMinutes - right.sortStartMinutes
   })
   return rows
 }

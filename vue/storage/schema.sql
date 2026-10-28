@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 \ir migrations/006_add_binding_scoped_sync_generation.sql
 \ir migrations/007_add_admin_permission.sql
 \ir migrations/008_add_task_operation_history.sql
+\ir migrations/009_add_cron_task_display.sql
+\ir migrations/010_add_schedule_dispatch_cache.sql
 
 INSERT INTO public.schema_migrations (version, name, checksum) VALUES
   (1, '001_add_users_and_task_ownership.sql',
@@ -43,7 +45,9 @@ INSERT INTO public.schema_migrations (version, name, checksum) VALUES
    '60168641cc15991754ab058d321cec2176c01daddbf057cc2cf4a5a0acb7e12d'),
   (7, '007_add_admin_permission.sql',
    'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57'),
-  (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d')
+  (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d'),
+  (9, '009_add_cron_task_display.sql', 'e1a9aeb24a8e0fd9afcadeabbb96204bf608d8141fc422887c8297d6e8fb62a1'),
+  (10, '010_add_schedule_dispatch_cache.sql', '3d21403bb63540d98263e0977394812cfd13fdc6d657f412bd3a52960cf9e008')
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

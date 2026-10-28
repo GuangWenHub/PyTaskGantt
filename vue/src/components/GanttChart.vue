@@ -16,7 +16,7 @@
         <n-button size="tiny" tertiary @click="resetTimeline" title="重置视图">
           重置
         </n-button>
-        <n-button size="tiny" :tertiary="!autoScroll" :type="autoScroll ? 'primary' : 'default'" :aria-pressed="autoScroll" @click="toggleAutoScroll" title="打开或重新激活页面时自动定位当前时间；设置保存在此浏览器一年，每次进入续期">
+        <n-button size="tiny" :tertiary="!autoScroll" :type="autoScroll ? 'primary' : 'default'" :aria-pressed="autoScroll" @click="toggleAutoScroll" title="打开或刷新页面时自动定位当前时间；设置保存在此浏览器一年，每次进入续期">
           自动滚动
         </n-button>
       </n-space>
@@ -53,6 +53,7 @@
         <div class="gantt-drag-tip-owner">
           {{ dragTip.owner }}<span v-if="dragTip.locked"> · 只读</span>
         </div>
+        <div v-if="dragTip.cron" class="gantt-drag-tip-owner">{{ dragTip.cron }}</div>
         <div class="gantt-drag-tip-time">
           {{ dragTip.start }} <span class="gantt-drag-tip-arrow">→</span> {{ dragTip.finish }}
           <span v-if="dragTip.duration" class="gantt-drag-tip-duration">{{ dragTip.duration }}</span>
@@ -70,6 +71,8 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Timeline } from 'vis-timeline/standalone'
 import { DataSet } from 'vis-data'
 import { NCard, NSpace, NButton, NEmpty } from 'naive-ui'
+import { cronTemplateSegments, cronTemplateSummary } from '../../shared/yingdaoCron.mjs'
+import { sourceTask } from '../../shared/scheduleDispatch.mjs'
 import {
   parseTimeToDate,
   getBotColor,
@@ -103,13 +106,11 @@ function toggleAutoScroll() {
   autoScroll.value = !autoScroll.value
   saveAutoScroll()
   if (autoScroll.value) {
-    activationHandled = document.visibilityState !== 'hidden'
     resetTimeline()
   }
   else {
     if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
-    if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
-    initialFocusRaf = activationFocusRaf = null
+    initialFocusRaf = null
   }
 }
 
@@ -122,8 +123,6 @@ let groupsDataset = null
 let containerResizeObserver = null
 let resizeRaf = null
 let initialFocusRaf = null
-let activationFocusRaf = null
-let activationHandled = document.visibilityState !== 'hidden'
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
 const REFERENCE_TIME_ID = 'schedule-reference'
@@ -496,9 +495,12 @@ function showTipFromTask(task, startStr, finishStr) {
   dragTip.value.start = startStr
   dragTip.value.finish = finishStr
   dragTip.value.duration = formatDuration(startStr, finishStr)
+  dragTip.value.cron = task.timing_mode === 'cron'
+    ? `${task.schedule_cron_expression || '规则待同步'} · 单次预计 ${task.expected_duration_seconds || 60} 秒` : ''
   dragTip.value.crossDay = isCrossDay(startStr, finishStr)
   dragTip.value.owner = task.owner?.display_name || '历史任务'
   dragTip.value.locked = !task.can_edit
+  if (task.shared_candidate) dragTip.value.cron = [dragTip.value.cron, `候选执行：${task.candidate_client.name}（随机选择一台）`].filter(Boolean).join(' · ')
   dragTip.value.visible = true
 }
 
@@ -582,23 +584,40 @@ const dynamicStyles = computed(() => {
 // 任务 → vis-timeline items（每个任务独占一行，group 用 task.id）
 // 注意：不再写 title 字段，统一用自渲染 tooltip 显示，避免浏览器原生 tooltip 干扰
 function buildItems(tasks) {
-  return tasks.map(t => {
+  return tasks.flatMap(t => {
     const { start, end } = parseTimeToDate(t.start, t.finish)
-    const freq = getTaskFrequencyBadge(t.tags)
+    const freq = getTaskFrequencyBadge(t.tags, t.timing_mode)
     const classes = [botClassName(t.bot)]
+    const viewId = t.view_id || t.id
+    if (t.shared_candidate) classes.push('shared-candidate')
     // 历史任务保持 task-locked（最淡）；仅含周/月的非历史任务淡化（浓于历史任务）
     if (!t.can_edit) classes.push('task-locked')
     else if (freq.faded) classes.push('freq-faded')
-    return {
-      id: t.id,
-      group: t.id, // 每个任务独占一个 group → 一行
+    if (t.timing_mode === 'cron') {
+      const win = timeline?.getWindow()
+      const range = win ? win.end.getTime() - win.start.getTime() : DEFAULT_TIMELINE_WINDOW_MS
+      const bucket = Math.max(60, Math.ceil(range / 1000 / 120 / 60) * 60)
+      const base = new Date(`${DUMMY_DATE}T00:00:00`).getTime()
+      try {
+        return cronTemplateSegments(t.schedule_cron_expression, t.expected_duration_seconds || 60, bucket).map(segment => ({
+          id: `${viewId}:cron:${segment.start}`, group: viewId,
+          start: new Date(base + segment.start * 1000), end: new Date(base + segment.end * 1000),
+          content: segment.count > 1 ? `🔁 ×${segment.count}` : '<span class="freq-badge">🔁</span>',
+          editable: false, className: [...classes, 'cron-occurrence', segment.count > 1 ? 'cron-aggregate' : ''].join(' '),
+          _raw: t, _cron_count: segment.count,
+        }))
+      } catch { return [] }
+    }
+    return [{
+      id: viewId,
+      group: viewId,
       content: freq.badge ? `<span class="freq-badge">${freq.badge}</span>` : '', // 左侧周期 emoji
       start,
       end,
-      editable: t.can_edit ? { updateTime: true, updateGroup: false, remove: false } : false,
+      editable: t.can_edit && !t.shared_candidate ? { updateTime: true, updateGroup: false, remove: false } : false,
       className: classes.join(' '),
       _raw: t,
-    }
+    }]
   })
 }
 
@@ -607,16 +626,17 @@ function buildItems(tasks) {
 // 不在这里二次排序，否则「按时间 / 按机器人」切换对甘特图不生效。
 function buildGroups(tasks) {
   return tasks.map((t, idx) => ({
-    id: t.id,
+    id: t.view_id || t.id,
     order: idx, // 配合 timeline option `groupOrder: 'order'` 控制行序
     // 左侧轨道标签：色块 + 任务名 + 机器人名
     content: `
       <div style="display:flex; align-items:center; gap:6px; padding-right:8px;">
         <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${taskColor(t)}; flex-shrink:0;"></span>
-        <span style="font-size:12px; font-weight:500; color:rgba(0,0,0,0.88); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(t.task)} · ${escapeHtml(t.bot)} · ${escapeHtml(t.owner?.display_name || '历史任务')}">${t.can_edit ? '' : '🔒 '}${escapeHtml(t.task)}</span>
+        ${t.shared_candidate ? `<small style="flex-shrink:0;">${escapeHtml(t.bot)} · 候选</small>` : ''}
+        <span style="font-size:12px; font-weight:500; color:rgba(0,0,0,0.88); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(t.task)} · ${escapeHtml(t.bot)} · ${escapeHtml(t.owner?.display_name || '历史任务')} ${escapeHtml(t.timing_mode === 'cron' ? cronTemplateSummary(t.schedule_cron_expression, t.expected_duration_seconds || 60) : '')}">${t.can_edit ? '' : '🔒 '}${t.timing_mode === 'cron' ? '🔁 ' : ''}${escapeHtml(t.task)}${t.timing_mode === 'cron' && !t.schedule_cron_expression ? '（规则待同步）' : ''}</span>
       </div>
     `,
-    className: botClassName(t.bot),
+    className: `${botClassName(t.bot)}${t.shared_candidate ? ' shared-candidate-label' : ''}`,
     _bot: t.bot,
     _start: t.start,
   }))
@@ -662,7 +682,7 @@ function createTimeline() {
     onMoving: (item, callback) => {
       // 拖拽过程中实时刷新自渲染 tooltip
       const raw = item._raw
-      if (!raw?.can_edit) {
+      if (!raw?.can_edit || raw.timing_mode === 'cron' || raw.shared_candidate) {
         callback(null)
         return
       }
@@ -681,7 +701,7 @@ function createTimeline() {
       callback(item)
     },
     onMove: (item, callback) => {
-      if (!item._raw?.can_edit) {
+      if (!item._raw?.can_edit || item._raw.timing_mode === 'cron' || item._raw.shared_candidate) {
         callback(null)
         return
       }
@@ -714,7 +734,10 @@ function createTimeline() {
   // 视窗变化（缩放/平移）后按新区间重算时间轴高亮层位置
   // 注意：vis-timeline 没有 redraw 事件，rangechange/rangechanged 是公开 API 里覆盖视窗变化的事件
   timeline.on('rangechange', handleRangeChange)
-  timeline.on('rangechanged', handleRangeChange)
+  timeline.on('rangechanged', () => {
+    handleRangeChange()
+    if (props.tasks.some(task => task.timing_mode === 'cron')) updateData()
+  })
 
   // 单击：触发编辑
   timeline.on('click', props_evt => {
@@ -725,9 +748,10 @@ function createTimeline() {
         // _raw 是 buildItems 时的原始引用，时间可能已被拖拽更新过；
         // 这里从 dataset 拿到最新 start/end 重新组装，避免回填旧时间。
         const latest = {
-          ...item._raw,
-          start: formatTime(item.start),
-          finish: formatTime(item.end || item.start),
+          ...sourceTask(item._raw),
+          ...(item._raw.timing_mode === 'cron' || item._raw.shared_candidate ? {} : {
+            start: formatTime(item.start), finish: formatTime(item.end || item.start),
+          }),
         }
         emit('task-click', latest)
       }
@@ -745,6 +769,7 @@ function createTimeline() {
       formatTime(item.start),
       formatTime(item.end || item.start)
     )
+    if (item._cron_count > 1) dragTip.value.cron += ` · 此段汇总 ${item._cron_count} 次计划`
   })
 
   // Hover：离开 item 隐藏（拖拽中可能短暂离开 item 区域，此时不要隐藏）
@@ -754,7 +779,7 @@ function createTimeline() {
   })
 
   // 先让起始视窗完成一帧绘制，再播放滑向当前时间的动画。
-  if (autoScroll.value && document.visibilityState !== 'hidden') initialFocusRaf = requestAnimationFrame(() => {
+  if (autoScroll.value) initialFocusRaf = requestAnimationFrame(() => {
     initialFocusRaf = requestAnimationFrame(() => {
       initialFocusRaf = null
       if (autoScroll.value) resetTimeline()
@@ -807,8 +832,6 @@ function fitTimeline() {
 
 function resetTimeline() {
   if (!timeline) return
-  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
-  activationFocusRaf = null
   if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
   initialFocusRaf = null
   const { start, end } = getCurrentTimeWindow()
@@ -817,34 +840,6 @@ function resetTimeline() {
     end,
     { animation: { duration: 1200, easingFunction: 'easeInOutQuad' } }
   )
-}
-
-function deactivateTimeline() {
-  activationHandled = false
-  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
-  initialFocusRaf = null
-  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
-  activationFocusRaf = null
-}
-
-function activateTimeline() {
-  if (!autoScroll.value || document.visibilityState === 'hidden' || activationHandled) return
-  activationHandled = true
-  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
-  initialFocusRaf = null
-  activationFocusRaf = requestAnimationFrame(() => {
-    activationFocusRaf = null
-    if (!autoScroll.value || !timeline || document.visibilityState === 'hidden') return
-    const current = timeline.getWindow()
-    const target = getCurrentTimeWindow()
-    const center = range => (range.start.getTime() + range.end.getTime()) / 2
-    if (Math.abs(center(current) - center(target)) > 1000) resetTimeline()
-  })
-}
-
-function handlePageVisibility() {
-  if (document.visibilityState === 'hidden') deactivateTimeline()
-  else activateTimeline()
 }
 
 watch(
@@ -870,9 +865,6 @@ onMounted(() => {
   saveAutoScroll()
   resizeTimelineToViewport()
   createTimeline()
-  window.addEventListener('focus', activateTimeline)
-  window.addEventListener('blur', deactivateTimeline)
-  document.addEventListener('visibilitychange', handlePageVisibility)
   window.addEventListener('resize', resizeTimelineToViewport, { passive: true })
   window.addEventListener('scroll', resizeTimelineOnScroll, { passive: true })
   window.visualViewport?.addEventListener('resize', resizeTimelineToViewport, { passive: true })
@@ -911,11 +903,6 @@ function hideDragTip() {
 }
 
 onBeforeUnmount(() => {
-  window.removeEventListener('focus', activateTimeline)
-  window.removeEventListener('blur', deactivateTimeline)
-  document.removeEventListener('visibilitychange', handlePageVisibility)
-  if (activationFocusRaf != null) cancelAnimationFrame(activationFocusRaf)
-  activationFocusRaf = null
   window.removeEventListener('pointermove', onWindowMouseMove, { capture: true })
   window.removeEventListener('mousemove', onWindowMouseMove, { capture: true })
   window.removeEventListener('pointerup', hideDragTip, { capture: true })
@@ -949,6 +936,8 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.gantt-container :deep(.vis-item.cron-occurrence) { min-width: 3px; }
+.gantt-container :deep(.vis-item.cron-aggregate) { background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,.25) 5px 8px); }
 .gantt-viewport {
   position: relative;
   width: 100%;

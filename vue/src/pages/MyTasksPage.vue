@@ -199,10 +199,10 @@ const columns = computed(() => [
   { title: '任务名称', key: 'task', width: 190, ellipsis: { tooltip: true } },
   {
     title: '标签', key: 'tags', width: 180,
-    render: row => h(NSpace, { size: 4 }, () => (row.tags.length ? row.tags : ['—']).map(tag => h(NTag, { size: 'small', bordered: false }, () => tag))),
+    render: row => h(NSpace, { size: 4 }, () => (row.timing_mode === 'cron' ? ['🔁', ...row.tags] : row.tags.length ? row.tags : ['—']).map(tag => h(NTag, { size: 'small', bordered: false }, () => tag))),
   },
-  { title: '时间', key: 'time', width: 150, render: row => `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
-  { title: 'Bot', key: 'bot', width: 120, ellipsis: { tooltip: true } },
+  { title: '时间', key: 'time', width: 180, render: row => row.timing_mode === 'cron' ? row.cronSummary : `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
+  { title: 'Bot', key: 'bot', width: 120, ellipsis: { tooltip: true }, render: row => row.schedule_dispatch?.execute_scope === 'any' && row.schedule_dispatch.clients?.length > 1 ? `任选1台（${row.schedule_dispatch.clients.length}台候选）` : row.bot },
   {
     title: '最新状态', key: 'normalized_status', width: 110,
     render: row => h(NTag, { size: 'small', bordered: false, type: statusType(row.normalized_status) }, () => row.normalized_status),

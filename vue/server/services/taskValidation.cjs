@@ -42,6 +42,8 @@ const createMutation = z.object({
   bot: botSchema,
   tags: tagsSchema.optional().default([]),
   note: noteSchema.optional().default(''),
+  timing_mode: z.enum(['single', 'cron']).optional().default('single'),
+  expected_duration_seconds: z.number().int().min(1).max(86400).optional().default(60),
 }).strict();
 
 const changesSchema = z.object({
@@ -51,6 +53,8 @@ const changesSchema = z.object({
   bot: botSchema.optional(),
   tags: tagsSchema.optional(),
   note: noteSchema.optional(),
+  timing_mode: z.enum(['single', 'cron']).optional(),
+  expected_duration_seconds: z.number().int().min(1).max(86400).optional(),
 }).strict().refine(value => Object.keys(value).length > 0, '至少需要一个修改字段');
 
 const updateMutation = z.object({

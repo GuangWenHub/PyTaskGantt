@@ -20,6 +20,16 @@ function parseLogPagination(query = {}) {
 
 function createYingdaoRouter({ scheduleDirectory, executionDetails }) {
   const router = express.Router();
+  router.get('/yingdao/schedules/:scheduleUuid/dispatch', asyncHandler(async (req, res) => {
+    const uuid = String(req.params.scheduleUuid || '').trim();
+    if (!uuid || uuid.length > 200) throw new ValidationError('计划 UUID 不正确');
+    res.json(await scheduleDirectory.getDispatch(uuid));
+  }));
+  router.get('/yingdao/schedules/:scheduleUuid/cron', asyncHandler(async (req, res) => {
+    const uuid = String(req.params.scheduleUuid || '').trim();
+    if (!uuid || uuid.length > 200) throw new ValidationError('计划 UUID 不正确');
+    res.json(await scheduleDirectory.getCron(uuid));
+  }));
 
   router.get('/yingdao/schedules', asyncHandler(async (req, res) => {
     const query = req.query.query || '';

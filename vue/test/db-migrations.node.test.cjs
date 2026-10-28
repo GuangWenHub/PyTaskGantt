@@ -10,9 +10,9 @@ const {
   MigrationError,
 } = require('../server/db/migrations.cjs');
 
-test('migration catalog is exactly the ordered 001-008 target', () => {
+test('migration catalog is exactly the ordered 001-010 target', () => {
   const migrations = discoverMigrations();
-  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   assert.deepEqual(migrations.map(item => item.name), [
     '001_add_users_and_task_ownership.sql',
     '002_add_executions_and_binding_history.sql',
@@ -22,6 +22,8 @@ test('migration catalog is exactly the ordered 001-008 target', () => {
     '006_add_binding_scoped_sync_generation.sql',
     '007_add_admin_permission.sql',
     '008_add_task_operation_history.sql',
+    '009_add_cron_task_display.sql',
+    '010_add_schedule_dispatch_cache.sql',
   ]);
   migrations.forEach(item => assert.match(item.checksum, /^[a-f0-9]{64}$/));
 });
@@ -78,7 +80,7 @@ test('startup comparison rejects missing, outdated, and rewritten migration hist
     () => compareMigrationState(migrations, rewritten),
     error => error.code === 'MIGRATION_CHECKSUM_MISMATCH'
   );
-  assert.equal(compareMigrationState(migrations, migrations).currentVersion, 8);
+  assert.equal(compareMigrationState(migrations, migrations).currentVersion, 10);
 });
 
 test('manual runner refuses non-contiguous applied history instead of migrating out of order', async () => {

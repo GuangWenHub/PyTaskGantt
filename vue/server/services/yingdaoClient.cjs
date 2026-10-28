@@ -889,6 +889,26 @@ class ScheduleDirectory {
     }
     return { schedule: result.schedule, cache: result.cache, binding };
   }
+
+  async getCron(scheduleUuid) {
+    const { parseYingdaoCron, scheduleCronExpression } = require('../../shared/yingdaoCron.mjs');
+    const result = await this.client.getScheduleDetail(scheduleUuid);
+    const source = result.schedule?.cronInterface;
+    if (!source || !['cron', 'minute'].includes(source.type)) {
+      throw new ScheduleDirectoryError('绑定的影刀计划没有 Cron 定时规则', { code: 'SCHEDULE_CRON_MISSING' });
+    }
+    let parsed;
+    try { parsed = parseYingdaoCron(scheduleCronExpression(source)); }
+    catch (error) { throw new ScheduleDirectoryError(error.message, { code: 'SCHEDULE_CRON_INVALID' }); }
+    return { expression: parsed.expression, count: parsed.seconds.length, times: parsed.seconds,
+      fetched_at: result.cache?.fetchedAt || new Date().toISOString(), stale: Boolean(result.cache?.stale) };
+  }
+
+  async getDispatch(scheduleUuid) {
+    const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
+    const result = await this.client.getScheduleDetail(scheduleUuid);
+    return { dispatch: normalizeScheduleDispatch(result.schedule), fetched_at: result.cache?.fetchedAt || new Date().toISOString(), stale: Boolean(result.cache?.stale) };
+  }
 }
 
 class ExecutionDetails {

@@ -82,6 +82,14 @@ BEGIN
       ('rpa_tasks', 'updated_at', 'timestamp with time zone', TRUE, '', 'now()'),
       ('rpa_tasks', 'deleted_at', 'timestamp with time zone', FALSE, '', NULL),
       ('rpa_tasks', 'sync_generation', 'bigint', TRUE, '', '0'),
+      ('rpa_tasks', 'timing_mode', 'text', TRUE, '', '''single''::text'),
+      ('rpa_tasks', 'expected_duration_seconds', 'integer', TRUE, '', '60'),
+      ('rpa_tasks', 'schedule_cron_expression', 'text', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_cron_synced_at', 'timestamp with time zone', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_cron_error', 'text', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_dispatch', 'jsonb', TRUE, '', '''{}''::jsonb'),
+      ('rpa_tasks', 'schedule_dispatch_synced_at', 'timestamp with time zone', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_dispatch_error', 'text', FALSE, '', NULL),
 
       ('rpa_task_binding_history', 'id', 'bigint', TRUE, 'd', NULL),
       ('rpa_task_binding_history', 'rpa_task_id', 'bigint', TRUE, '', NULL),
@@ -201,7 +209,9 @@ BEGIN
       (5, '005_add_durable_run_requests.sql', 'c6e6b76cb0d7d8cd51453f88bdb0b7ba1531b28928e7ef89b064926b6d339737'),
       (6, '006_add_binding_scoped_sync_generation.sql', '60168641cc15991754ab058d321cec2176c01daddbf057cc2cf4a5a0acb7e12d'),
       (7, '007_add_admin_permission.sql', 'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57'),
-      (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d')
+      (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d'),
+      (9, '009_add_cron_task_display.sql', 'e1a9aeb24a8e0fd9afcadeabbb96204bf608d8141fc422887c8297d6e8fb62a1'),
+      (10, '010_add_schedule_dispatch_cache.sql', '3d21403bb63540d98263e0977394812cfd13fdc6d657f412bd3a52960cf9e008')
   ), mismatches AS (
     (
       SELECT version, name, checksum::TEXT AS checksum
@@ -224,7 +234,7 @@ BEGIN
     FROM mismatches;
 
   IF issue IS NOT NULL THEN
-    RAISE EXCEPTION 'schema_migrations 与仓库 001-008 不一致：%', issue;
+    RAISE EXCEPTION 'schema_migrations 与仓库 001-010 不一致：%', issue;
   END IF;
 
   WITH expected(table_name, index_name, is_unique, access_method, is_partial) AS (
@@ -348,6 +358,12 @@ BEGIN
        'CHECK ((schedule_uuid IS NULL) = (schedule_bound_at IS NULL)) NOT VALID'),
       ('rpa_tasks', 'ck_rpa_tasks_sync_generation_nonnegative', 'c', TRUE,
        'CHECK (sync_generation >= 0)'),
+      ('rpa_tasks', 'ck_rpa_tasks_timing_mode', 'c', TRUE,
+       'CHECK (timing_mode = ANY (ARRAY[''single''::text, ''cron''::text]))'),
+      ('rpa_tasks', 'ck_rpa_tasks_schedule_dispatch_object', 'c', TRUE,
+       'CHECK (jsonb_typeof(schedule_dispatch) = ''object''::text)'),
+      ('rpa_tasks', 'ck_rpa_tasks_expected_duration', 'c', TRUE,
+       'CHECK (expected_duration_seconds >= 1 AND expected_duration_seconds <= 86400)'),
       ('rpa_task_binding_history', 'rpa_task_binding_history_pkey', 'p', TRUE,
        'PRIMARY KEY (id)'),
       ('rpa_task_binding_history', 'rpa_task_binding_history_rpa_task_id_fkey', 'f', TRUE,

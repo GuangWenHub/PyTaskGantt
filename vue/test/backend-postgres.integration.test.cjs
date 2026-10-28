@@ -28,11 +28,12 @@ integration('PostgreSQL 真实事务与权限集成', () => {
           excludeTaskId: context.excludeTaskId || context.taskId,
         });
         if (binding) throw new ConflictError('SCHEDULE_ALREADY_BOUND', '该影刀计划已被其他任务绑定');
-        return { schedule: { scheduleUuid } };
+        return { schedule: { scheduleUuid, ...(scheduleUuid === 'schedule-shared' ? { executeScope: 'any', clientScope: 'assign', robotClientList: [{ uuid: 'machine-a', robotClientName: 'admin@tenant' }, { uuid: 'machine-b', robotClientName: 'bot_1@tenant' }] } : {}) } };
       },
       async list() {
         return { schedules: [], page: 1, size: 20, total: 0 };
       },
+      async getCron() { return { expression: '0 0-8/2 * * *', fetched_at: new Date().toISOString(), stale: false }; },
     };
     const yingdaoClient = {
       async startTask() {
@@ -70,7 +71,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
         sessionCookieName: 'pytaskgantt.test.sid',
         sessionTableName: 'app_sessions',
         secureCookies: false,
-        schemaVersion: 8,
+        schemaVersion: 10,
       },
       pool,
       repositories,
@@ -831,6 +832,57 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     expect(page.body.has_more).toBe(true);
     const next = await agent.get(`/api/task-history?task_id=${task.id}&limit=5&before_id=${page.body.next_cursor}`).expect(200);
     expect(next.body.records.some(row => page.body.records.some(previous => previous.id === row.id))).toBe(false);
+  });
+
+  it('循环模式保存、权限、历史还原、旧绑定回写保护及导入导出', async () => {
+    const agent = await login(1);
+    const other = await login(2);
+    const original = await createTask(agent, 'schedule-cron');
+    await other.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { timing_mode: 'cron' } }] }).expect(403);
+    const result = await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { timing_mode: 'cron', expected_duration_seconds: 60 } }] }).expect(200);
+    const recurring = result.body.tasks[0];
+    expect(recurring).toMatchObject({ timing_mode: 'cron', expected_duration_seconds: 60, schedule_cron_expression: '0 0-8/2 * * *' });
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: recurring.version, changes: { schedule_cron_expression: '* * * * *' } }] }).expect(400);
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: recurring.version, changes: { expected_duration_seconds: 0 } }] }).expect(400);
+    const record = (await agent.get(`/api/task-history?task_id=${original.id}`).expect(200)).body.records.find(row => row.action === 'update');
+    expect(record.after).toMatchObject({ timing_mode: 'cron', expected_duration_seconds: 60 });
+    await agent.post(`/api/task-history/${record.id}/restore`).send({ version: recurring.version }).expect(200);
+    const restored = (await agent.get('/api/tasks').expect(200)).body.tasks[0];
+    expect(restored.timing_mode).toBe('single');
+    const imported = await agent.post('/api/import').send({ format: 'json', content: JSON.stringify([{ Task: '循环导入', Start: '23:59:00', Finish: '00:01:00', Bot: 'A', ScheduleUuid: 'schedule-cron-import', TimingMode: 'cron', ExpectedDurationSeconds: 120 }]) }).expect(200);
+    expect(imported.body.inserted).toBe(1);
+    const exported = await agent.get('/api/export/json').expect(200);
+    expect(exported.body.find(row => row.Task === '循环导入')).toMatchObject({ TimingMode: 'cron', ExpectedDurationSeconds: 120 });
+    const row = (await repositories.tasks.listBoundTasks()).find(task => task.task === '循环导入');
+    const oldAttempt = await repositories.tasks.beginSyncAttempt({ taskId: row.id, scheduleUuid: row.scheduleUuid, scheduleBoundAt: row.scheduleBoundAt });
+    const freshAttempt = await repositories.tasks.beginSyncAttempt(oldAttempt);
+    expect(await repositories.tasks.updateScheduleCron(oldAttempt, { expression: '* * * * *' })).toBeNull();
+    await repositories.tasks.updateScheduleCron(freshAttempt, { error: '暂时不可用' });
+    expect((await repositories.tasks.findById(row.id)).scheduleCronExpression).toBe('0 0-8/2 * * *');
+    await agent.post(`/api/tasks/${row.id}/rebind`).send({ schedule_uuid: 'schedule-cron-new', version: row.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleCronExpression).toBeNull();
+    expect(await repositories.tasks.updateScheduleCron(freshAttempt, { expression: '* * * * *' })).toBeNull();
+  });
+
+  it('共享机器元数据取自上游，旧同步不覆盖新同步，失败保留缓存，换绑清空缓存', async () => {
+    const agent = await login(1);
+    const original = await createTask(agent, 'schedule-shared');
+    expect(original.schedule_dispatch).toMatchObject({ execute_scope: 'any', clients: [{ id: 'machine-a' }, { id: 'machine-b' }] });
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { schedule_dispatch: {} } }] }).expect(400);
+    const row = await repositories.tasks.findById(original.id);
+    const oldAttempt = await repositories.tasks.beginSyncAttempt({ taskId: row.id, scheduleUuid: row.scheduleUuid, scheduleBoundAt: row.scheduleBoundAt });
+    const fresh = await repositories.tasks.beginSyncAttempt(oldAttempt);
+    expect(await repositories.tasks.updateScheduleDispatch(oldAttempt, { dispatch: {} })).toBeNull();
+    await repositories.tasks.updateScheduleDispatch(fresh, { error: 'temporary unavailable' });
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch.clients).toHaveLength(2);
+    await agent.post(`/api/tasks/${row.id}/rebind`).send({ schedule_uuid: 'schedule-shared-new', version: row.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch).toEqual({});
+    expect(await repositories.tasks.updateScheduleDispatch(fresh, { dispatch: original.schedule_dispatch })).toBeNull();
+    const history = (await agent.get(`/api/task-history?task_id=${row.id}`).expect(200)).body.records;
+    const binding = history.find(record => record.action === 'rebind');
+    const current = await repositories.tasks.findById(row.id);
+    await agent.post(`/api/task-history/${binding.id}/restore`).send({ version: current.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch).toEqual({});
   });
 
   it('执行记录过期清理不会删除或破坏已完成的立即执行请求关联', async () => {

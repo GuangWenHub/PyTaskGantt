@@ -29,6 +29,29 @@ function deferred() {
 }
 
 describe('task draft store', () => {
+  it('轮询合并候选机器缓存时保留本地备注，不把只读缓存写进 mutation', async () => {
+    let response = { tasks: [task()] }
+    const store = createTaskDraftStore(async () => response)
+    await store.load()
+    store.updateTask('1', { note: '本地修改' })
+    const dispatch = { execute_scope: 'any', clients: [{ id: 'a', name: 'admin@tenant' }, { id: 'b', name: 'bot_1@tenant' }] }
+    response = { tasks: [task({ schedule_dispatch: dispatch })] }
+    await store.load({ preserveDraft: true })
+    expect(store.tasks.value[0]).toMatchObject({ note: '本地修改', schedule_dispatch: dispatch })
+    expect(store.mutationList.value[0].changes).toEqual({ note: '本地修改' })
+    store.addTask(task({ id: undefined, schedule_dispatch: dispatch }))
+    expect(store.mutationList.value.find(item => item.type === 'create')).not.toHaveProperty('schedule_dispatch')
+  })
+  it('循环配置保留草稿预览，服务器轮询不抹掉新模式且不提交只读缓存', async () => {
+    const store = createTaskDraftStore(async () => ({ tasks: [task()], serverTime: null }))
+    await store.load()
+    store.updateTask('1', { timing_mode: 'cron', expected_duration_seconds: 120, schedule_cron_expression: '0 0-8/2 * * *' })
+    await store.load({ preserveDraft: true })
+    expect(store.tasks.value[0]).toMatchObject({ timing_mode: 'cron', expected_duration_seconds: 120, schedule_cron_expression: '0 0-8/2 * * *' })
+    expect(store.mutationList.value[0].changes).toEqual({ timing_mode: 'cron', expected_duration_seconds: 120 })
+    store.discard()
+    expect(store.tasks.value[0].timing_mode).toBe('single')
+  })
   it('只为变化字段生成带版本号的 update mutation', () => {
     const store = createTaskDraftStore(async () => ({ tasks: [], serverTime: null }))
     store._hydrateForTest([task()])

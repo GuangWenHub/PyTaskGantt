@@ -8,9 +8,11 @@ export const HISTORY_ACTIONS = {
 export const HISTORY_FIELDS = {
   task: '任务名称', start: '开始时间', finish: '结束时间', bot: '机器人', tags: '标签',
   note: '任务备注', owner_user_id: '所有者', schedule_uuid: '计划 UUID', bound: '绑定状态', deleted: '任务状态',
+  timing_mode: '排班模式', expected_duration_seconds: '单次预计时长（秒）',
 }
 
 export function historyValue(field, value, owners = {}) {
+  if (field === 'timing_mode') return value === 'cron' ? '🔁 循环任务' : '单段排班';
   if (field === 'deleted') return value ? '已删除' : '有效'
   if (field === 'bound') return value ? '已绑定' : '未绑定'
   if (field === 'owner_user_id') return value ? owners[value] || `用户 ${value}` : '未分配'

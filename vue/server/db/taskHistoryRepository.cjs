@@ -1,7 +1,7 @@
 const { resolveExecutor } = require('./repositoryUtils.cjs');
 
 const HISTORY_LIMIT = 50;
-const SNAPSHOT_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note', 'owner_user_id', 'schedule_uuid', 'bound', 'deleted'];
+const SNAPSHOT_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note', 'timing_mode', 'expected_duration_seconds', 'owner_user_id', 'schedule_uuid', 'bound', 'deleted'];
 
 function taskSnapshot(row) {
   if (!row) return null;
@@ -13,6 +13,8 @@ function taskSnapshot(row) {
     bot: row.bot,
     tags: [...(row.tags || [])],
     note: row.note || '',
+    timing_mode: row.timing_mode || 'single',
+    expected_duration_seconds: Number(row.expected_duration_seconds || 60),
     owner_user_id: row.owner_user_id == null ? null : String(row.owner_user_id),
     schedule_uuid: row.schedule_uuid || null,
     bound: Boolean(row.schedule_uuid && row.schedule_bound_at && !row.deleted_at),

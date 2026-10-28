@@ -87,6 +87,16 @@ function buildApp(overrides = {}) {
 }
 
 describe('Express 会话与权限边界', () => {
+  it('候选机器接口要求登录，并仅调用指定计划的只读门面', async () => {
+    const calls = [];
+    const app = buildApp({ services: { scheduleDirectory: { async getDispatch(uuid) { calls.push(uuid); return { dispatch: { execute_scope: 'any', clients: [] }, stale: false }; } } } });
+    await request(app).get('/api/yingdao/schedules/schedule-1/dispatch').expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    const result = await agent.get('/api/yingdao/schedules/schedule-1/dispatch').expect(200);
+    expect(result.body.dispatch.execute_scope).toBe('any');
+    expect(calls).toEqual(['schedule-1']);
+  });
   it('生产代理下的会话 Cookie 启用 HttpOnly、Secure 和 SameSite=Lax', async () => {
     const response = await request(buildApp({
       config: { secureCookies: true, trustProxy: 1 },
@@ -268,6 +278,8 @@ describe('Express 会话与权限边界', () => {
       ScheduleUuid: 'schedule-export',
       Tags: '日报',
       Note: '导出备注',
+      TimingMode: 'single',
+      ExpectedDurationSeconds: 60,
     }]);
     expect(JSON.stringify(exported.body)).not.toContain('must-not-export');
   });

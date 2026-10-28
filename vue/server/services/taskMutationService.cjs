@@ -16,6 +16,8 @@ const FIELD_TO_COLUMN = {
   bot: 'bot',
   tags: 'tags',
   note: 'note',
+  timing_mode: 'timing_mode',
+  expected_duration_seconds: 'expected_duration_seconds',
 };
 
 async function addAudit(client, { taskId, actorUserId, action, oldValue = null, newValue = null, beforeTask, afterTask, sourceAuditId }) {
@@ -79,7 +81,7 @@ async function validateSchedule(scheduleDirectory, scheduleUuid, context) {
   if (!scheduleDirectory || typeof scheduleDirectory.assertBindable !== 'function') {
     throw new Error('计划目录服务未配置 assertBindable');
   }
-  await scheduleDirectory.assertBindable(scheduleUuid, context);
+  return scheduleDirectory.assertBindable(scheduleUuid, context);
 }
 
 function createTaskMutationService({ pool, scheduleDirectory }) {
@@ -94,8 +96,25 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
       if (new Set(createSchedules).size !== createSchedules.length) {
         throw new ConflictError('SCHEDULE_ALREADY_BOUND', '同一批次不能重复绑定同一个影刀计划');
       }
+      const dispatchBySchedule = new Map();
       for (const scheduleUuid of createSchedules) {
-        await validateSchedule(scheduleDirectory, scheduleUuid, { actorUserId: userId });
+        const result = await validateSchedule(scheduleDirectory, scheduleUuid, { actorUserId: userId });
+        const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
+        dispatchBySchedule.set(scheduleUuid, normalizeScheduleDispatch(result?.schedule));
+      }
+
+      const cronByMutation = new Map();
+      for (const mutation of input.mutations) {
+        if ((mutation.type === 'create' ? mutation.timing_mode : mutation.changes?.timing_mode) !== 'cron') continue;
+        let uuid = mutation.schedule_uuid;
+        if (mutation.type === 'update') {
+          const { rows } = await pool.query('SELECT * FROM rpa_tasks WHERE id = $1 AND deleted_at IS NULL', [mutation.id]);
+          assertOwner(rows[0], actor);
+          if (Number(rows[0].version) !== mutation.version) throw new ConflictError('VERSION_CONFLICT');
+          uuid = rows[0].schedule_uuid;
+        }
+        const cron = await scheduleDirectory.getCron(uuid);
+        cronByMutation.set(mutation.temp_id || mutation.id, cron);
       }
 
       const client = await pool.connect();
@@ -111,15 +130,22 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
             const { rows } = await client.query(
               `INSERT INTO rpa_tasks (
                  task, start_time, finish_time, bot, tags, note,
-                 created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at
+                 created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at,
+                 timing_mode, expected_duration_seconds, schedule_cron_expression, schedule_cron_synced_at, schedule_cron_error,
+                 schedule_dispatch, schedule_dispatch_synced_at
                ) VALUES (
                  $1, $2, $3, $4, $5::text[], $6, $7, $7, $8,
-                 date_trunc('milliseconds', clock_timestamp())
+                 date_trunc('milliseconds', clock_timestamp()), $9, $10, $11, $12, $13, $14::jsonb, clock_timestamp()
                )
                RETURNING *`,
               [
                 mutation.task, mutation.start, mutation.finish, mutation.bot,
                 mutation.tags, mutation.note, userId, mutation.schedule_uuid,
+                mutation.timing_mode, mutation.expected_duration_seconds,
+                cronByMutation.get(mutation.temp_id)?.expression || null,
+                cronByMutation.get(mutation.temp_id)?.fetched_at || null,
+                cronByMutation.get(mutation.temp_id)?.stale ? '影刀暂不可用，沿用缓存规则' : null,
+                JSON.stringify(dispatchBySchedule.get(mutation.schedule_uuid) || {}),
               ]
             );
             const row = rows[0];
@@ -144,6 +170,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
                 bot: row.bot,
                 tags: row.tags,
                 note: row.note,
+                timing_mode: row.timing_mode,
+                expected_duration_seconds: row.expected_duration_seconds,
                 schedule_uuid: row.schedule_uuid,
                 owner_user_id: String(userId),
               },
@@ -172,6 +200,11 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               const cast = field === 'tags' ? '::text[]' : '';
               return `${FIELD_TO_COLUMN[field]} = $${index + 3}${cast}`;
             });
+            const cron = cronByMutation.get(mutation.id);
+            if (cron) {
+              values.push(cron.expression, cron.fetched_at, cron.stale ? '影刀暂不可用，沿用缓存规则' : null);
+              assignments.push(`schedule_cron_expression = $${values.length}`, `schedule_cron_synced_at = $${values.length + 1}`, `schedule_cron_error = $${values.length + 2}`);
+            }
             const { rows } = await client.query(
               `UPDATE rpa_tasks
                SET ${assignments.join(', ')}, version = version + 1, updated_at = now()

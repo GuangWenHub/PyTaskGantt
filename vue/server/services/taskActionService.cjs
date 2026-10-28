@@ -163,7 +163,9 @@ function createTaskActionService({
       const { rows } = await client.query(
         `UPDATE rpa_tasks
          SET schedule_uuid = $2, schedule_bound_at = $3, version = version + 1,
-             last_synced_at = NULL, sync_error = NULL, updated_at = $3
+             last_synced_at = NULL, sync_error = NULL, updated_at = $3,
+             schedule_cron_expression = NULL, schedule_cron_synced_at = NULL, schedule_cron_error = NULL,
+             schedule_dispatch = '{}'::jsonb, schedule_dispatch_synced_at = NULL, schedule_dispatch_error = NULL
          WHERE id = $1 AND version = $4 AND deleted_at IS NULL
          RETURNING *`,
         [taskId, scheduleUuid, changedAt, version]
@@ -307,6 +309,8 @@ function createTaskActionService({
                 version = version + 1,
                 last_synced_at = NULL,
                 sync_error = NULL,
+                schedule_cron_expression = NULL, schedule_cron_synced_at = NULL, schedule_cron_error = NULL,
+                schedule_dispatch = '{}'::jsonb, schedule_dispatch_synced_at = NULL, schedule_dispatch_error = NULL,
                 updated_at = $4
           WHERE id = $1 AND version = $5 AND deleted_at IS NULL
         RETURNING *`,

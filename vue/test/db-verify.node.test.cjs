@@ -26,7 +26,7 @@ test('verify.sql is fail-fast and executes entirely inside a read-only transacti
 
 test('verify.sql pins the exact ordered migration names and repository checksums', () => {
   const migrations = discoverMigrations();
-  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
   for (const migration of migrations) {
     assert.match(
@@ -94,7 +94,7 @@ test('verify.sql covers every durable table, explicit index, and updated_at trig
   }
 });
 
-test('verify.sql checks critical field types and defaults from migrations 001-008', () => {
+test('verify.sql checks critical field types and defaults from migrations 001-010', () => {
   for (const tuple of [
     "('app_users', 'auth_provider', 'text', TRUE, '', '''dev''::text')",
     "('app_users', 'is_admin', 'boolean', TRUE, '', 'false')",
@@ -102,6 +102,8 @@ test('verify.sql checks critical field types and defaults from migrations 001-00
     "('rpa_tasks', 'finish_time', 'character varying(8)', TRUE, '', '''00:00:00''::character varying')",
     "('rpa_tasks', 'version', 'integer', TRUE, '', '1')",
     "('rpa_tasks', 'sync_generation', 'bigint', TRUE, '', '0')",
+    "('rpa_tasks', 'timing_mode', 'text', TRUE, '', '''single''::text')",
+    "('rpa_tasks', 'expected_duration_seconds', 'integer', TRUE, '', '60')",
     "('rpa_task_executions', 'job_uuid_list', 'jsonb', TRUE, '', '''[]''::jsonb')",
     "('rpa_task_audit_log', 'action', 'text', TRUE, '', NULL)",
     "('rpa_task_run_requests', 'status', 'text', TRUE, '', '''pending''::text')",
