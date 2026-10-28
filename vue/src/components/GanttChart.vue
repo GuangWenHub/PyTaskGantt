@@ -73,7 +73,6 @@ import {
   DUMMY_DATE,
   isCrossDay,
   formatDuration,
-  escapeHtml,
 } from '../services/dataService.js'
 
 const props = defineProps({
@@ -108,7 +107,7 @@ const dragTip = ref({
   y: 0,
   task: '',
   bot: '',
-  color: '#1677ff',
+  color: 'var(--accent)',
   start: '',
   finish: '',
   duration: '',
@@ -531,7 +530,7 @@ const dynamicStyles = computed(() => {
 .vis-item.${cls}.task-locked {
   opacity: .58;
   cursor: not-allowed;
-  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.1) 0 5px, rgba(255,255,255,.3) 5px 8px);
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.1) 0 5px, rgba(255,255,255,0.3) 5px 8px);
 }
 `
     })
@@ -564,17 +563,55 @@ function buildItems(tasks) {
 // 任务 → vis-timeline groups（每个任务一行，label 显示任务名 + 机器人色块）
 // 行序直接沿用父组件传入的 tasks 顺序——排序的唯一事实源是 App.vue 的 filterTasks(sortBy)。
 // 不在这里二次排序，否则「按时间 / 按机器人」切换对甘特图不生效。
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
+function createLockIcon() {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 16 16')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('aria-label', '只读')
+  const body = document.createElementNS(SVG_NS, 'rect')
+  Object.entries({ x: 3.5, y: 7, width: 9, height: 6.5, rx: 1.5 }).forEach(([k, v]) => body.setAttribute(k, v))
+  const shackle = document.createElementNS(SVG_NS, 'path')
+  shackle.setAttribute('d', 'M5.5 7V5a2.5 2.5 0 0 1 5 0v2')
+  for (const el of [body, shackle]) {
+    el.setAttribute('stroke', 'currentColor')
+    el.setAttribute('stroke-width', '1.4')
+    svg.appendChild(el)
+  }
+  return svg
+}
+
+// 左侧轨道标签：机器人色条 + 任务名 + 所有者（只读任务带锁图标）。
+// 传 DOM 元素而非 HTML 字符串：vis-timeline 会用 xss 过滤字符串内容，剥掉 class 和 svg。
+function buildGroupLabel(t) {
+  const ownerName = t.owner?.display_name || '历史任务'
+  const row = document.createElement('div')
+  row.className = t.can_edit ? 'gantt-label-row' : 'gantt-label-row is-locked'
+  row.title = `${t.task} · ${t.bot} · ${ownerName}`
+
+  const dot = document.createElement('span')
+  dot.className = 'gantt-label-dot'
+  dot.style.background = taskColor(t)
+
+  const name = document.createElement('span')
+  name.className = 'gantt-label-name'
+  name.textContent = t.task
+
+  const owner = document.createElement('span')
+  owner.className = 'gantt-label-owner'
+  if (!t.can_edit) owner.appendChild(createLockIcon())
+  owner.append(t.owner?.display_name || '历史')
+
+  row.append(dot, name, owner)
+  return row
+}
+
 function buildGroups(tasks) {
   return tasks.map((t, idx) => ({
     id: t.id,
     order: idx, // 配合 timeline option `groupOrder: 'order'` 控制行序
-    // 左侧轨道标签：色块 + 任务名 + 机器人名
-    content: `
-      <div style="display:flex; align-items:center; gap:6px; padding-right:8px;">
-        <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:${taskColor(t)}; flex-shrink:0;"></span>
-        <span style="font-size:12px; font-weight:500; color:rgba(0,0,0,0.88); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(t.task)} · ${escapeHtml(t.bot)} · ${escapeHtml(t.owner?.display_name || '历史任务')}">${t.can_edit ? '' : '🔒 '}${escapeHtml(t.task)}</span>
-      </div>
-    `,
+    content: buildGroupLabel(t),
     className: botClassName(t.bot),
     _bot: t.bot,
     _start: t.start,
@@ -880,10 +917,10 @@ onBeforeUnmount(() => {
   pointer-events: none;
   min-width: 160px;
   padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.86);
+  background: rgba(16, 37, 26, 0.94);
   color: #ffffff;
   border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 16px rgba(16, 37, 26, 0.18);
   font-size: 12px;
   line-height: 1.6;
   font-variant-numeric: tabular-nums;
@@ -899,11 +936,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255,255,255,0.75);
   font-size: 11px;
 }
 .gantt-drag-tip-owner {
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(255,255,255,0.62);
   font-size: 11px;
 }
 .gantt-drag-tip-dot {
@@ -920,13 +957,13 @@ onBeforeUnmount(() => {
 }
 .gantt-drag-tip-arrow {
   margin: 0 2px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255,255,255,0.6);
 }
 .gantt-drag-tip-cross {
   display: inline-block;
   margin-left: 6px;
   padding: 0 6px;
-  background: #fa8c16;
+  background: var(--warn);
   color: #ffffff;
   border-radius: 3px;
   font-size: 10px;
@@ -936,8 +973,8 @@ onBeforeUnmount(() => {
   display: inline-block;
   margin-left: 8px;
   padding: 0 6px;
-  background: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255,255,255,0.18);
+  color: rgba(255,255,255,0.92);
   border-radius: 3px;
   font-size: 11px;
   font-family: inherit;
@@ -954,16 +991,16 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 .vis-labelset .vis-label .vis-inner {
-  padding: 4px 0;
+  padding: 0;
   width: 100%;
   overflow: hidden;
 }
 .vis-timeline .vis-panel.vis-left {
-  border-right: 1px solid #f0f0f0;
+  border-right: 1px solid var(--line);
 }
 /* 行高紧凑一些 */
 .vis-foreground .vis-group {
-  border-bottom: 1px solid #fafafa;
+  border-bottom: 1px solid var(--line-soft);
 }
 /* 任务条垂直居中：
    stack:false 时 vis 把每个任务条钉在 top = margin.item.vertical(4px)，而行高(31px)由更高的
@@ -991,7 +1028,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
   user-select: none;
   color: #ffffff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  text-shadow: 0 1px 2px var(--faint);
 }
 /* 仅含每周/每月（不含每日）的非历史任务淡化：opacity .78，介于历史任务(.58)和正常(1)之间 */
 .vis-item.freq-faded {
@@ -999,16 +1036,16 @@ onBeforeUnmount(() => {
 }
 /* 时间轴冻结高亮带（图表区）：半透明色块 + 两侧虚线；零宽（单击第一次）时靠 border 显示竖线 */
 .vis-item.freeze-band {
-  background-color: rgba(22, 119, 255, 0.12) !important;
-  border-left: 2px dashed rgba(22, 119, 255, 0.7) !important;
-  border-right: 2px dashed rgba(22, 119, 255, 0.7) !important;
+  background-color: rgba(22, 112, 75, 0.12) !important;
+  border-left: 2px dashed rgba(22, 112, 75, 0.7) !important;
+  border-right: 2px dashed rgba(22, 112, 75, 0.7) !important;
   box-sizing: border-box;
   pointer-events: none;
 }
 /* 拖选/待定中的预览态：比定稿更淡 */
 .vis-item.freeze-band.freeze-preview {
-  background-color: rgba(22, 119, 255, 0.07) !important;
-  border-color: rgba(22, 119, 255, 0.45) !important;
+  background-color: rgba(22, 112, 75, 0.07) !important;
+  border-color: rgba(22, 112, 75, 0.45) !important;
 }
 /* 时间轴上的高亮覆盖层：我们自己的 DOM（append 到 .vis-panel.vis-top），
    vis 重绘不会动它，位置按视窗百分比由 updateAxisOverlay 维护 */
@@ -1024,24 +1061,24 @@ onBeforeUnmount(() => {
   top: 0;
   bottom: 0;
   display: none;
-  background-color: rgba(22, 119, 255, 0.28);
-  border-left: 2px dashed rgba(22, 119, 255, 0.85);
-  border-right: 2px dashed rgba(22, 119, 255, 0.85);
+  background-color: rgba(22, 112, 75, 0.28);
+  border-left: 2px dashed rgba(22, 112, 75, 0.85);
+  border-right: 2px dashed rgba(22, 112, 75, 0.85);
   box-sizing: border-box;
 }
 .freeze-axis-band.freeze-preview {
-  background-color: rgba(22, 119, 255, 0.14);
-  border-color: rgba(22, 119, 255, 0.5);
+  background-color: rgba(22, 112, 75, 0.14);
+  border-color: rgba(22, 112, 75, 0.5);
 }
 /* 第一次单击后的待定竖线（贯穿图表区）；禁 pointer-events 防止被用户拖动 */
 .vis-custom-time.freeze-pending {
-  background-color: rgba(22, 119, 255, 0.85) !important;
+  background-color: rgba(22, 112, 75, 0.85) !important;
   width: 2px !important;
   pointer-events: none !important;
 }
 /* 固定排班参考线；与冻结标记独立，不参与鼠标交互。 */
 .gantt-container .vis-custom-time.schedule-reference {
-  background-color: #595959;
+  background-color: var(--muted);
   width: 2px;
   pointer-events: none;
 }

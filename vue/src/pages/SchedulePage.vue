@@ -16,18 +16,6 @@
             @task-click="handleTaskClick"
             @task-update="handleGanttUpdate"
           />
-          <TaskList
-            :tasks="filteredTasks"
-            :can-recover="Boolean(auth.user?.is_admin)"
-            @edit="openEdit"
-            @delete="confirmDelete"
-            @history="openHistory"
-            @run="confirmRun"
-            @sync="syncOne"
-            @rebind="openRebind"
-            @transfer="openTransfer"
-            @recover="openRecovery"
-          />
         </div>
         <aside class="schedule-sidebar">
           <FilterPanel
@@ -49,6 +37,20 @@
             @save="handleSave"
           />
         </aside>
+        <div class="schedule-list">
+          <TaskList
+            :tasks="filteredTasks"
+            :can-recover="Boolean(auth.user?.is_admin)"
+            @edit="openEdit"
+            @delete="confirmDelete"
+            @history="openHistory"
+            @run="confirmRun"
+            @sync="syncOne"
+            @rebind="openRebind"
+            @transfer="openTransfer"
+            @recover="openRecovery"
+          />
+        </div>
       </div>
     </n-spin>
 

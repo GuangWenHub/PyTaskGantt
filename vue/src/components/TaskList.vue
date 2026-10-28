@@ -1,5 +1,5 @@
 <template>
-  <n-card title="任务列表" size="small" :bordered="true" class="task-list-card">
+  <n-card title="任务列表" size="small" :bordered="false" class="task-list-card">
     <template #header-extra><n-text depth="3">共 {{ tasks.length }} 条</n-text></template>
     <n-empty v-if="!tasks.length" description="暂无符合条件的任务" class="table-empty" />
     <n-data-table
@@ -9,10 +9,9 @@
       :pagination="{ pageSize: 10, size: 'small' }"
       :row-key="row => row.id"
       :row-class-name="row => row.can_edit ? '' : 'locked-task-row'"
-      :scroll-x="1120"
+      :scroll-x="910"
       size="small"
       :bordered="false"
-      :single-line="false"
       striped
     />
   </n-card>
@@ -40,32 +39,32 @@ const columns = computed(() => [
     },
   },
   {
-    title: '所有者', key: 'owner', width: 120,
+    title: '所有者', key: 'owner', width: 100, ellipsis: { tooltip: true },
     render: row => h('span', { class: 'owner-cell' }, row.owner?.display_name || '历史任务'),
   },
   {
-    title: '开始', key: 'start', width: 88,
+    title: '开始', key: 'start', width: 80,
     render: row => h('span', { class: 'time-chip' }, row.start.slice(0, 5)),
   },
   {
-    title: '结束', key: 'finish', width: 105,
+    title: '结束', key: 'finish', width: 128,
     render(row) {
-      return h(NSpace, { size: 4, wrap: false }, () => [
+      return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h('span', { class: 'time-chip' }, row.finish.slice(0, 5)),
         row.crossDay ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '次日') : null,
       ])
     },
   },
   {
-    title: 'Bot', key: 'bot', width: 120,
-    render: row => h(NTag, { size: 'small', bordered: false, color: { color: row.color, textColor: '#fff' } }, () => row.bot),
+    title: 'Bot', key: 'bot', width: 150,
+    render: row => h(NTag, { size: 'small', bordered: false, color: { color: row.color, textColor: '#fff' }, style: 'max-width: 100%' }, () => h('span', { class: 'bot-tag-text', title: row.bot }, row.bot)),
   },
   {
-    title: '状态', key: 'normalized_status', width: 105,
+    title: '状态', key: 'normalized_status', width: 96,
     render: row => h(NTag, { size: 'small', bordered: false, type: statusType(row.normalized_status) }, () => row.normalized_status),
   },
   {
-    title: '操作', key: 'actions', width: 190, fixed: 'right', align: 'center',
+    title: '操作', key: 'actions', width: 176, fixed: 'right', align: 'center',
     render(row) {
       if (!row.can_edit) {
         return h(NSpace, { size: 4, justify: 'center', wrap: false }, () => [
