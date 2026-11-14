@@ -20,7 +20,8 @@ BEGIN
       ('rpa_task_executions'),
       ('rpa_task_audit_log'),
       ('rpa_task_run_requests'),
-      ('app_sessions')
+      ('rpa_task_operation_history'),
+      ('rpa_plan_creation_whitelist'), ('rpa_plan_sync_whitelist'), ('rpa_plan_scan_snapshots'), ('app_sessions')
   )
   SELECT string_agg(format('public.%I', expected.table_name), ', ' ORDER BY expected.table_name)
     INTO issue
@@ -73,6 +74,7 @@ BEGIN
       ('rpa_tasks', 'schedule_uuid', 'text', FALSE, '', NULL),
       ('rpa_tasks', 'schedule_bound_at', 'timestamp with time zone', FALSE, '', NULL),
       ('rpa_tasks', 'tags', 'text[]', TRUE, '', 'ARRAY[]::text[]'),
+      ('rpa_tasks', 'is_hidden', 'boolean', TRUE, '', 'false'),
       ('rpa_tasks', 'note', 'text', TRUE, '', '''''::text'),
       ('rpa_tasks', 'version', 'integer', TRUE, '', '1'),
       ('rpa_tasks', 'last_synced_at', 'timestamp with time zone', FALSE, '', NULL),
@@ -81,6 +83,14 @@ BEGIN
       ('rpa_tasks', 'updated_at', 'timestamp with time zone', TRUE, '', 'now()'),
       ('rpa_tasks', 'deleted_at', 'timestamp with time zone', FALSE, '', NULL),
       ('rpa_tasks', 'sync_generation', 'bigint', TRUE, '', '0'),
+      ('rpa_tasks', 'timing_mode', 'text', TRUE, '', '''single''::text'),
+      ('rpa_tasks', 'expected_duration_seconds', 'integer', TRUE, '', '60'),
+      ('rpa_tasks', 'schedule_cron_expression', 'text', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_cron_synced_at', 'timestamp with time zone', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_cron_error', 'text', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_dispatch', 'jsonb', TRUE, '', '''{}''::jsonb'),
+      ('rpa_tasks', 'schedule_dispatch_synced_at', 'timestamp with time zone', FALSE, '', NULL),
+      ('rpa_tasks', 'schedule_dispatch_error', 'text', FALSE, '', NULL),
 
       ('rpa_task_binding_history', 'id', 'bigint', TRUE, 'd', NULL),
       ('rpa_task_binding_history', 'rpa_task_id', 'bigint', TRUE, '', NULL),
@@ -133,6 +143,23 @@ BEGIN
       ('rpa_task_run_requests', 'created_at', 'timestamp with time zone', TRUE, '', 'now()'),
       ('rpa_task_run_requests', 'updated_at', 'timestamp with time zone', TRUE, '', 'now()'),
 
+      ('rpa_task_operation_history', 'id', 'bigint', TRUE, 'd', NULL),
+      ('rpa_task_operation_history', 'audit_log_id', 'bigint', TRUE, '', NULL),
+      ('rpa_task_operation_history', 'task_id', 'bigint', TRUE, '', NULL),
+      ('rpa_task_operation_history', 'task_name', 'text', TRUE, '', NULL),
+      ('rpa_task_operation_history', 'actor_user_id', 'bigint', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'action', 'text', TRUE, '', NULL),
+      ('rpa_task_operation_history', 'before_snapshot', 'jsonb', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'after_snapshot', 'jsonb', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'snapshot_complete', 'boolean', TRUE, '', 'true'),
+      ('rpa_task_operation_history', 'before_version', 'integer', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'after_version', 'integer', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'annotation', 'text', TRUE, '', '''''::text'),
+      ('rpa_task_operation_history', 'annotation_version', 'integer', TRUE, '', '0'),
+      ('rpa_task_operation_history', 'annotation_updated_at', 'timestamp with time zone', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'source_audit_id', 'bigint', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'reverted_by_audit_id', 'bigint', FALSE, '', NULL),
+      ('rpa_task_operation_history', 'created_at', 'timestamp with time zone', TRUE, '', 'clock_timestamp()'),
       ('app_sessions', 'sid', 'character varying', TRUE, '', NULL),
       ('app_sessions', 'sess', 'json', TRUE, '', NULL),
       ('app_sessions', 'expire', 'timestamp(6) without time zone', TRUE, '', NULL)
@@ -182,7 +209,13 @@ BEGIN
       (4, '004_finalize_postgres_only_schema.sql', '98ba7f05055bf6b886605f6da3edcc71f66d4c3d2b9fce124d33de834dd190df'),
       (5, '005_add_durable_run_requests.sql', 'c6e6b76cb0d7d8cd51453f88bdb0b7ba1531b28928e7ef89b064926b6d339737'),
       (6, '006_add_binding_scoped_sync_generation.sql', '60168641cc15991754ab058d321cec2176c01daddbf057cc2cf4a5a0acb7e12d'),
-      (7, '007_add_admin_permission.sql', 'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57')
+      (7, '007_add_admin_permission.sql', 'a4e8ac1df160e4ef9386b48707760f632a82b763009c2a5c5276545d0f01fe57'),
+      (8, '008_add_task_operation_history.sql', 'faa7055693b15ec1eff30d217ec83577c56813a9f9706884323867b813b4002d'),
+      (9, '009_add_cron_task_display.sql', 'e1a9aeb24a8e0fd9afcadeabbb96204bf608d8141fc422887c8297d6e8fb62a1'),
+      (10, '010_add_schedule_dispatch_cache.sql', '3d21403bb63540d98263e0977394812cfd13fdc6d657f412bd3a52960cf9e008'),
+  (11, '011_add_plan_reconciliation_state.sql', 'fc4e832927fd7a72b6ff4b7bf16e90028f4485a4e870d26400059cb0ea68abce'),
+  (12, '012_add_plan_creation_whitelist.sql', 'f92d94fe15b9fb895c7525eda798addfa0e83f57525d2df170b2f372b5d284e0'),
+  (13, '013_add_task_visibility.sql', '8fa61182c16be960e943342b8e51485ec93ee47bbb31aa320fdf16d26a16bf90')
   ), mismatches AS (
     (
       SELECT version, name, checksum::TEXT AS checksum
@@ -205,7 +238,7 @@ BEGIN
     FROM mismatches;
 
   IF issue IS NOT NULL THEN
-    RAISE EXCEPTION 'schema_migrations 与仓库 001-007 不一致：%', issue;
+    RAISE EXCEPTION 'schema_migrations 与仓库 001-013 不一致：%', issue;
   END IF;
 
   WITH expected(table_name, index_name, is_unique, access_method, is_partial) AS (
@@ -230,6 +263,9 @@ BEGIN
       ('rpa_task_executions', 'idx_rpa_task_executions_retention', FALSE, 'btree', FALSE),
       ('rpa_task_audit_log', 'idx_rpa_task_audit_log_task_created', FALSE, 'btree', FALSE),
       ('rpa_task_audit_log', 'idx_rpa_task_audit_log_actor_created', FALSE, 'btree', FALSE),
+      ('rpa_task_operation_history', 'idx_task_operation_history_task_recent', FALSE, 'btree', FALSE),
+      ('rpa_task_operation_history', 'idx_task_operation_history_recent', FALSE, 'btree', FALSE),
+      ('rpa_task_operation_history', 'idx_task_operation_history_actor_recent', FALSE, 'btree', FALSE),
       ('app_sessions', 'idx_app_sessions_expire', FALSE, 'btree', FALSE),
       ('rpa_task_run_requests', 'uq_rpa_task_run_requests_open_task', TRUE, 'btree', TRUE),
       ('rpa_task_run_requests', 'idx_rpa_task_run_requests_pending_retry', FALSE, 'btree', TRUE),
@@ -326,6 +362,12 @@ BEGIN
        'CHECK ((schedule_uuid IS NULL) = (schedule_bound_at IS NULL)) NOT VALID'),
       ('rpa_tasks', 'ck_rpa_tasks_sync_generation_nonnegative', 'c', TRUE,
        'CHECK (sync_generation >= 0)'),
+      ('rpa_tasks', 'ck_rpa_tasks_timing_mode', 'c', TRUE,
+       'CHECK (timing_mode = ANY (ARRAY[''single''::text, ''cron''::text]))'),
+      ('rpa_tasks', 'ck_rpa_tasks_schedule_dispatch_object', 'c', TRUE,
+       'CHECK (jsonb_typeof(schedule_dispatch) = ''object''::text)'),
+      ('rpa_tasks', 'ck_rpa_tasks_expected_duration', 'c', TRUE,
+       'CHECK (expected_duration_seconds >= 1 AND expected_duration_seconds <= 86400)'),
       ('rpa_task_binding_history', 'rpa_task_binding_history_pkey', 'p', TRUE,
        'PRIMARY KEY (id)'),
       ('rpa_task_binding_history', 'rpa_task_binding_history_rpa_task_id_fkey', 'f', TRUE,
@@ -351,7 +393,7 @@ BEGIN
       ('rpa_task_audit_log', 'rpa_task_audit_log_actor_user_id_fkey', 'f', TRUE,
        'FOREIGN KEY (actor_user_id) REFERENCES app_users(id) ON DELETE RESTRICT'),
       ('rpa_task_audit_log', 'ck_rpa_task_audit_log_action', 'c', FALSE,
-       'CHECK (action = ANY (ARRAY[''create''::text, ''update''::text, ''delete''::text, ''rebind''::text, ''transfer''::text, ''import''::text, ''run_now''::text, ''admin_recover''::text])) NOT VALID'),
+       'CHECK (action = ANY (ARRAY[''create''::text, ''update''::text, ''delete''::text, ''rebind''::text, ''transfer''::text, ''import''::text, ''run_now''::text, ''admin_recover''::text, ''restore''::text])) NOT VALID'),
       ('rpa_task_run_requests', 'rpa_task_run_requests_pkey', 'p', TRUE,
        'PRIMARY KEY (idempotent_uuid)'),
       ('rpa_task_run_requests', 'rpa_task_run_requests_rpa_task_id_fkey', 'f', TRUE,
@@ -372,6 +414,13 @@ BEGIN
        'CHECK (attempt_count >= 0)'),
       ('rpa_task_run_requests', 'ck_rpa_task_run_requests_completion', 'c', TRUE,
        'CHECK (status = ''succeeded''::text AND task_uuid IS NOT NULL AND audit_log_id IS NOT NULL AND completed_at IS NOT NULL OR status = ''rejected''::text AND completed_at IS NOT NULL OR (status = ANY (ARRAY[''pending''::text, ''dispatching''::text])) AND completed_at IS NULL)'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_pkey', 'p', TRUE, 'PRIMARY KEY (id)'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_audit_log_id_key', 'u', TRUE, 'UNIQUE (audit_log_id)'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_audit_log_id_fkey', 'f', TRUE, 'FOREIGN KEY (audit_log_id) REFERENCES rpa_task_audit_log(id) ON DELETE RESTRICT'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_source_audit_id_fkey', 'f', TRUE, 'FOREIGN KEY (source_audit_id) REFERENCES rpa_task_audit_log(id) ON DELETE RESTRICT'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_reverted_by_audit_id_fkey', 'f', TRUE, 'FOREIGN KEY (reverted_by_audit_id) REFERENCES rpa_task_audit_log(id) ON DELETE RESTRICT'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_task_id_fkey', 'f', TRUE, 'FOREIGN KEY (task_id) REFERENCES rpa_tasks(id) ON DELETE RESTRICT'),
+      ('rpa_task_operation_history', 'rpa_task_operation_history_actor_user_id_fkey', 'f', TRUE, 'FOREIGN KEY (actor_user_id) REFERENCES app_users(id) ON DELETE RESTRICT'),
       ('app_sessions', 'app_sessions_pkey', 'p', TRUE, 'PRIMARY KEY (sid)')
   )
   SELECT string_agg(format('public.%I.%I', expected.table_name, expected.constraint_name), ', ' ORDER BY expected.table_name, expected.constraint_name)
@@ -492,7 +541,7 @@ BEGIN
       SELECT 'ck_rpa_task_audit_log_action'
        WHERE EXISTS (
          SELECT 1 FROM public.rpa_task_audit_log
-          WHERE action NOT IN ('create', 'update', 'delete', 'rebind', 'transfer', 'import', 'run_now', 'admin_recover')
+          WHERE action NOT IN ('create', 'update', 'delete', 'rebind', 'transfer', 'import', 'run_now', 'admin_recover', 'restore')
        )
     ) AS violation;
 
@@ -570,6 +619,17 @@ SELECT normalized_status, COUNT(*)
 FROM public.rpa_task_executions
 GROUP BY normalized_status
 ORDER BY normalized_status;
+
+DO $verify_history$
+BEGIN
+  IF EXISTS (
+    SELECT task_id FROM public.rpa_task_operation_history
+    GROUP BY task_id HAVING COUNT(*) > 50
+  ) THEN
+    RAISE EXCEPTION 'Task operation history exceeds 50 records per task';
+  END IF;
+END
+$verify_history$;
 
 SELECT 'verification_ok' AS result, NOW() AS checked_at;
 

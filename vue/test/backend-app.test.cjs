@@ -87,6 +87,100 @@ function buildApp(overrides = {}) {
 }
 
 describe('Express 会话与权限边界', () => {
+  it('待新增白名单使用空任务ID与计划UUID，拒绝伪装成已有任务的计划规则', async () => {
+    const calls = [];
+    const app = buildApp({ services: { scheduleReconciliation: { async changeRule(actor, rule, remove) { calls.push({ actor: actor.userId, rule, remove }); return { whitelist: [] }; } } } });
+    const agent = request.agent(app), rule = { task_id: null, schedule_uuid: 'unbound-plan', field: 'plan' };
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    await agent.post('/api/yingdao/reconciliation/whitelist').send(rule).expect(200);
+    await agent.post('/api/yingdao/reconciliation/whitelist').send({ ...rule, task_id: '1' }).expect(400);
+    await agent.delete('/api/yingdao/reconciliation/whitelist').send(rule).expect(200);
+    expect(calls).toEqual([{ actor: '1', rule, remove: false }, { actor: '1', rule, remove: true }]);
+  });
+  it('所选异常核验与白名单批量恢复验证登录、来源、严格载荷并传递真实actor', async () => {
+    const calls = [], id = '8ab3b8bc-dc44-44d2-b7a5-97afc6543a7b';
+    const app = buildApp({ services: { scheduleReconciliation: {
+      async recheck(snapshot, actor, ids) { calls.push(['recheck', snapshot, actor.userId, ids]); return { result: null }; },
+      async restoreRules(actor, rules) { calls.push(['restore', actor.userId, rules]); return { whitelist: [] }; },
+    } } });
+    const path = `/api/yingdao/reconciliation/${id}/recheck`, batch = '/api/yingdao/reconciliation/whitelist/batch';
+    const rule = { task_id: '1', schedule_uuid: 'a', field: 'task' };
+    await request(app).post(path).send({ entry_ids: [id] }).expect(401);
+    await request(app).delete(batch).send({ rules: [rule] }).expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    await agent.post(path).set('Origin', 'https://evil.example').send({ entry_ids: [id] }).expect(403);
+    await agent.delete(batch).set('Origin', 'https://evil.example').send({ rules: [rule] }).expect(403);
+    await agent.post(path).send({ entry_ids: [id], run_now: true }).expect(400);
+    await agent.delete(batch).send({ rules: [{ ...rule, field: 'owner_user_id' }] }).expect(400);
+    await agent.post(path).send({ entry_ids: [id] }).expect(200);
+    await agent.delete(batch).send({ rules: [rule] }).expect(200);
+    expect(calls).toEqual([['recheck', id, '1', [id]], ['restore', '1', [rule]]]);
+  });
+  it('共享结果和白名单需登录，白名单写入校验来源、属性和服务端操作者', async () => {
+    const calls = [];
+    const app = buildApp({ services: { scheduleReconciliation: {
+      async sharedState(actor) { calls.push(['read', actor.userId]); return { result: null, whitelist: [] }; },
+      async changeRule(actor, rule, remove) { calls.push(['rule', actor.userId, rule, remove]); return { whitelist: [] }; },
+    } } });
+    const rule = { task_id: '1', schedule_uuid: 'plan-a', field: 'task' };
+    await request(app).get('/api/yingdao/reconciliation/state').expect(401);
+    await request(app).post('/api/yingdao/reconciliation/whitelist').send(rule).expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    await agent.get('/api/yingdao/reconciliation/state').expect(200);
+    await agent.post('/api/yingdao/reconciliation/whitelist').set('Origin', 'https://evil.example').send(rule).expect(403);
+    await agent.post('/api/yingdao/reconciliation/whitelist').send({ ...rule, field: 'owner_user_id' }).expect(400);
+    await agent.post('/api/yingdao/reconciliation/whitelist').send(rule).expect(200);
+    await agent.delete('/api/yingdao/reconciliation/whitelist').send(rule).expect(200);
+    expect(calls).toEqual([['read', '1'], ['rule', '1', rule, false], ['rule', '1', rule, true]]);
+  });
+  it('计划差异扫描与执行需要登录、合法来源和服务端actor，不接受任意变更载荷', async () => {
+    const calls = [];
+    const id = '8ab3b8bc-dc44-44d2-b7a5-97afc6543a7b';
+    const app = buildApp({ services: { scheduleReconciliation: {
+      start(actor) { calls.push(['start', actor.userId]); return { id, state: 'scanning' }; },
+      get(scanId, actor) { calls.push(['get', scanId, actor.userId]); return { id: scanId, state: 'ready', entries: [] }; },
+      async apply(scanId, actor, body) { calls.push(['apply', scanId, actor.userId, body.entry_ids]); return { success: true, tasks: [] }; },
+    } } });
+    await request(app).post('/api/yingdao/reconciliation').send({}).expect(401);
+    await request(app).get(`/api/yingdao/reconciliation/${id}`).expect(401);
+    await request(app).post(`/api/yingdao/reconciliation/${id}/apply`).send({ entry_ids: [id] }).expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    await agent.post('/api/yingdao/reconciliation').set('Origin', 'https://evil.example').send({}).expect(403);
+    await agent.post('/api/yingdao/reconciliation').send({}).expect(202);
+    await agent.get(`/api/yingdao/reconciliation/${id}`).expect(200);
+    await agent.post(`/api/yingdao/reconciliation/${id}/apply`).send({ entry_ids: [id], changes: { owner_user_id: '2' } }).expect(400);
+    await agent.post(`/api/yingdao/reconciliation/${id}/apply`).send({ entry_ids: [id] }).expect(200);
+    expect(calls.map(call => call[0])).toEqual(['start', 'get', 'apply']);
+    expect(calls.every(call => call.includes('1'))).toBe(true);
+  });
+  it('自动填写及最近运行接口要求登录且只读取指定计划', async () => {
+    const calls = [];
+    const app = buildApp({ services: { scheduleDirectory: {
+      async getEditorPlan(uuid) { calls.push(['editor', uuid]); return { schedule_uuid: uuid }; },
+      async getRecentRuns(uuid) { calls.push(['runs', uuid]); return { records: [] }; },
+    } } });
+    await request(app).get('/api/yingdao/schedules/a/editor').expect(401);
+    await request(app).get('/api/yingdao/schedules/a/recent-runs').expect(401);
+    expect(calls).toEqual([]);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    await agent.get('/api/yingdao/schedules/a/editor').expect(200);
+    await agent.get('/api/yingdao/schedules/a/recent-runs').expect(200);
+    expect(calls).toEqual([['editor', 'a'], ['runs', 'a']]);
+  });
+  it('候选机器接口要求登录，并仅调用指定计划的只读门面', async () => {
+    const calls = [];
+    const app = buildApp({ services: { scheduleDirectory: { async getDispatch(uuid) { calls.push(uuid); return { dispatch: { execute_scope: 'any', clients: [] }, stale: false }; } } } });
+    await request(app).get('/api/yingdao/schedules/schedule-1/dispatch').expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '1' }).expect(200);
+    const result = await agent.get('/api/yingdao/schedules/schedule-1/dispatch').expect(200);
+    expect(result.body.dispatch.execute_scope).toBe('any');
+    expect(calls).toEqual(['schedule-1']);
+  });
   it('生产代理下的会话 Cookie 启用 HttpOnly、Secure 和 SameSite=Lax', async () => {
     const response = await request(buildApp({
       config: { secureCookies: true, trustProxy: 1 },
@@ -268,6 +362,8 @@ describe('Express 会话与权限边界', () => {
       ScheduleUuid: 'schedule-export',
       Tags: '日报',
       Note: '导出备注',
+      TimingMode: 'single',
+      ExpectedDurationSeconds: 60,
     }]);
     expect(JSON.stringify(exported.body)).not.toContain('must-not-export');
   });

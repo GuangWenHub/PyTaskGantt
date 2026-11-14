@@ -163,9 +163,11 @@ function createTaskActionService({
       const { rows } = await client.query(
         `UPDATE rpa_tasks
          SET schedule_uuid = $2, schedule_bound_at = $3, version = version + 1,
-             last_synced_at = NULL, sync_error = NULL, updated_at = $3
+             last_synced_at = NULL, sync_error = NULL, updated_at = $3,
+             schedule_cron_expression = NULL, schedule_cron_synced_at = NULL, schedule_cron_error = NULL,
+             schedule_dispatch = '{}'::jsonb, schedule_dispatch_synced_at = NULL, schedule_dispatch_error = NULL
          WHERE id = $1 AND version = $4 AND deleted_at IS NULL
-         RETURNING id`,
+         RETURNING *`,
         [taskId, scheduleUuid, changedAt, version]
       );
       if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
@@ -173,6 +175,8 @@ function createTaskActionService({
         taskId,
         actorUserId: userId,
         action: 'rebind',
+        beforeTask: current,
+        afterTask: rows[0],
         oldValue: { schedule_uuid: current.schedule_uuid },
         newValue: withAdminAudit({
           schedule_uuid: scheduleUuid,
@@ -214,7 +218,7 @@ function createTaskActionService({
         `UPDATE rpa_tasks
          SET owner_user_id = $2, version = version + 1, updated_at = now()
          WHERE id = $1 AND version = $3 AND deleted_at IS NULL
-         RETURNING id`,
+         RETURNING *`,
         [taskId, targetUserId, version]
       );
       if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
@@ -222,6 +226,8 @@ function createTaskActionService({
         taskId,
         actorUserId: userId,
         action: 'transfer',
+        beforeTask: current,
+        afterTask: rows[0],
         oldValue: { owner_user_id: String(current.owner_user_id) },
         newValue: withAdminAudit(
           { owner_user_id: String(targetUserId) },
@@ -303,9 +309,11 @@ function createTaskActionService({
                 version = version + 1,
                 last_synced_at = NULL,
                 sync_error = NULL,
+                schedule_cron_expression = NULL, schedule_cron_synced_at = NULL, schedule_cron_error = NULL,
+                schedule_dispatch = '{}'::jsonb, schedule_dispatch_synced_at = NULL, schedule_dispatch_error = NULL,
                 updated_at = $4
           WHERE id = $1 AND version = $5 AND deleted_at IS NULL
-        RETURNING id`,
+        RETURNING *`,
         [taskId, ownerUserId, scheduleUuid, boundAt, version]
       );
       if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
@@ -314,6 +322,8 @@ function createTaskActionService({
         taskId,
         actorUserId: actor.userId,
         action: 'admin_recover',
+        beforeTask: current,
+        afterTask: rows[0],
         oldValue: {
           owner_user_id: current.owner_user_id == null ? null : String(current.owner_user_id),
           schedule_uuid: current.schedule_uuid || null,

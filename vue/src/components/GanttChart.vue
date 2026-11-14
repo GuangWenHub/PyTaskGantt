@@ -16,6 +16,9 @@
         <n-button size="tiny" tertiary @click="resetTimeline" title="重置视图">
           重置
         </n-button>
+        <n-button size="tiny" tertiary @click="$emit('manage-hidden')" title="甘特图显示设置与隐藏任务名单">
+          设置
+        </n-button>
       </n-space>
     </template>
     <div
@@ -26,8 +29,10 @@
       <div
         ref="containerRef"
         class="gantt-container"
-        :class="{ 'gantt-container-empty': !tasks.length }"
+        :class="{ 'gantt-container-empty': !tasks.length, 'gantt-reference-easter-egg': referenceEasterEgg, 'gantt-sidebar-collapsed': !taskSidebarExpanded }"
+        :style="{ '--reference-mantra': JSON.stringify(referenceMantra) }"
       ></div>
+      <n-button class="gantt-sidebar-toggle" size="tiny" :aria-expanded="taskSidebarExpanded" :aria-label="taskSidebarExpanded ? '收起任务名称栏' : '展开任务名称栏'" :title="taskSidebarExpanded ? '收起任务名称栏' : '展开任务名称栏'" @click.stop="toggleTaskSidebar">{{ taskSidebarExpanded ? '‹' : '›' }}</n-button>
       <n-empty
         v-if="!tasks.length"
         class="gantt-empty"
@@ -37,6 +42,7 @@
     <!-- 拖拽时的浮动 tooltip（teleport 到 body，避免被 card overflow 截断） -->
     <Teleport to="body">
       <div
+        ref="tooltipRef"
         v-show="dragTip.visible"
         class="gantt-drag-tip"
         :style="{ left: dragTip.x + 'px', top: dragTip.y + 'px' }"
@@ -49,6 +55,8 @@
         <div class="gantt-drag-tip-owner">
           {{ dragTip.owner }}<span v-if="dragTip.locked"> · 只读</span>
         </div>
+        <div v-if="dragTip.runStatus" class="gantt-drag-tip-owner">{{ dragTip.runStatus }}</div>
+        <div v-if="dragTip.cron" class="gantt-drag-tip-owner">{{ dragTip.cron }}</div>
         <div class="gantt-drag-tip-time">
           {{ dragTip.start }} <span class="gantt-drag-tip-arrow">→</span> {{ dragTip.finish }}
           <span v-if="dragTip.duration" class="gantt-drag-tip-duration">{{ dragTip.duration }}</span>
@@ -66,20 +74,59 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { Timeline } from 'vis-timeline/standalone'
 import { DataSet } from 'vis-data'
 import { NCard, NSpace, NButton, NEmpty } from 'naive-ui'
+import { taskRunIndicators } from '../../shared/taskRunIndicators.mjs'
+import { readDisplayPreference, saveDisplayPreference } from '../services/browserPreferences.js'
+import { taskNameOffset } from '../services/taskNameLayout.js'
+import { cronTemplateSegments, cronTemplateSummary } from '../../shared/yingdaoCron.mjs'
+import { sourceTask, candidateExecutionText } from '../../shared/scheduleDispatch.mjs'
 import {
   parseTimeToDate,
   getBotColor,
   getTaskFrequencyBadge,
   DUMMY_DATE,
+  DEFAULT_TIMELINE_WINDOW_MS,
+  getCurrentTimeWindow,
   isCrossDay,
   formatDuration,
 } from '../services/dataService.js'
 
 const props = defineProps({
   tasks: { type: Array, required: true },
+  autoScroll: { type: Boolean, default: () => readDisplayPreference('pytaskgantt.timelineAutoScroll') },
+  showTaskNames: { type: Boolean, default: false },
+  showCurrentTimeLine: { type: Boolean, default: false },
+  showReferenceLines: { type: Boolean, default: true },
+  showRunStatus: { type: Boolean, default: false },
+  runStatus: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['task-click', 'task-update'])
+const emit = defineEmits(['task-click', 'task-update', 'manage-hidden'])
+
+const taskSidebarExpanded = ref(!props.showTaskNames)
+async function refreshTaskSidebar() {
+  await nextTick()
+  if (!timeline) return
+  timeline.redraw?.()
+  updateData()
+  handleRangeChange()
+}
+function toggleTaskSidebar() { taskSidebarExpanded.value = !taskSidebarExpanded.value; void refreshTaskSidebar() }
+
+
+const AUTO_SCROLL_COOKIE = 'pytaskgantt.timelineAutoScroll'
+const autoScroll = computed(() => props.autoScroll)
+function saveAutoScroll() {
+  saveDisplayPreference(AUTO_SCROLL_COOKIE, autoScroll.value)
+}
+watch(autoScroll, () => {
+  if (autoScroll.value) {
+    resetTimeline()
+  }
+  else {
+    if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+    initialFocusRaf = null
+  }
+})
 
 const viewportRef = ref(null)
 const containerRef = ref(null)
@@ -89,9 +136,58 @@ let itemsDataset = null
 let groupsDataset = null
 let containerResizeObserver = null
 let resizeRaf = null
+let initialFocusRaf = null
 const MIN_GANTT_HEIGHT = 320
 const VIEWPORT_BOTTOM_GAP = 36
 const REFERENCE_TIME_ID = 'schedule-reference'
+const EVENING_REFERENCE_TIME_ID = 'schedule-reference-evening'
+let referenceLinesAdded = false
+function configureReferenceLines() {
+  if (!timeline) return
+  if (props.showReferenceLines && !referenceLinesAdded) {
+    timeline.addCustomTime(new Date(`${DUMMY_DATE}T08:30:00`), REFERENCE_TIME_ID)
+    timeline.setCustomTimeTitle('', REFERENCE_TIME_ID)
+    timeline.addCustomTime(new Date(`${DUMMY_DATE}T17:30:00`), EVENING_REFERENCE_TIME_ID)
+    timeline.setCustomTimeTitle('', EVENING_REFERENCE_TIME_ID)
+    referenceLinesAdded = true
+  } else if (!props.showReferenceLines && referenceLinesAdded) {
+    timeline.removeCustomTime(REFERENCE_TIME_ID)
+    timeline.removeCustomTime(EVENING_REFERENCE_TIME_ID)
+    referenceLinesAdded = false
+  }
+}
+const CURRENT_TIME_ID = 'schedule-current'
+let currentTimeTimer = null
+let currentTimeLineAdded = false
+function currentDisplayTime() {
+  const { start, end } = getCurrentTimeWindow()
+  return new Date((start.getTime() + end.getTime()) / 2)
+}
+function configureCurrentTimeLine() {
+  clearInterval(currentTimeTimer)
+  currentTimeTimer = null
+  if (!timeline) return
+  if (!props.showCurrentTimeLine) {
+    if (currentTimeLineAdded) timeline.removeCustomTime(CURRENT_TIME_ID)
+    currentTimeLineAdded = false
+    return
+  }
+  if (!currentTimeLineAdded) {
+    timeline.addCustomTime(currentDisplayTime(), CURRENT_TIME_ID)
+    timeline.setCustomTimeTitle('', CURRENT_TIME_ID)
+    currentTimeLineAdded = true
+  }
+  currentTimeTimer = setInterval(() => {
+    if (timeline && currentTimeLineAdded) timeline.setCustomTime(currentDisplayTime(), CURRENT_TIME_ID)
+  }, 1000)
+}
+const MIN_ZOOM_WINDOW_MS = 1000 * 60 * 5
+const referenceEasterEgg = ref(false)
+const REFERENCE_MANTRA = '佛祖保佑不异常无bug · 南无阿弥陀佛 · 唵嘛呢叭咪吽 · '
+// 按图表高度补足重复文字，超出参考线的部分由样式裁切。
+const referenceMantra = computed(() => REFERENCE_MANTRA.repeat(
+  Math.ceil(ganttHeight.value / REFERENCE_MANTRA.length) + 1
+))
 // 拖拽自身触发的 task-update 会导致父组件 allTasks 变化 → 触发本组件 watch。
 // 我们已在 onMove 里同步了 dataset，无需再 updateData，这里用一次性标志位跳过。
 let suppressNextUpdate = false
@@ -115,6 +211,7 @@ const dragTip = ref({
   owner: '',
   locked: false,
 })
+const tooltipRef = ref(null)
 
 // 最近鼠标坐标（拖拽边缘自动滚动用）
 let lastClientX = 0
@@ -343,8 +440,8 @@ function onWindowMouseMove(e) {
   lastClientX = e.clientX
   lastClientY = e.clientY
   // 偏移 14/18px 避免遮住光标和被光标 hover 拦截
-  dragTip.value.x = e.clientX + 14
-  dragTip.value.y = e.clientY + 18
+  dragTip.value.x = Math.max(8, Math.min(e.clientX + 14, window.innerWidth - (tooltipRef.value?.offsetWidth || 320) - 8))
+  dragTip.value.y = Math.max(8, Math.min(e.clientY + 18, window.innerHeight - (tooltipRef.value?.offsetHeight || 120) - 8))
 }
 
 // ===== 拖拽到边缘自动平移视窗 =====
@@ -448,16 +545,22 @@ function stopAutoScroll() {
 }
 
 function showTipFromTask(task, startStr, finishStr) {
+  dragTip.value.runStatus = ''
   dragTip.value.task = task.task
   dragTip.value.bot = task.bot
   dragTip.value.color = taskColor(task)
   dragTip.value.start = startStr
   dragTip.value.finish = finishStr
   dragTip.value.duration = formatDuration(startStr, finishStr)
+  dragTip.value.cron = task.timing_mode === 'cron'
+    ? `${task.schedule_cron_expression || '规则待同步'} · 单次预计 ${task.expected_duration_seconds || 60} 秒` : ''
   dragTip.value.crossDay = isCrossDay(startStr, finishStr)
   dragTip.value.owner = task.owner?.display_name || '历史任务'
   dragTip.value.locked = !task.can_edit
+  const candidates = candidateExecutionText(task)
+  if (candidates) dragTip.value.cron = [dragTip.value.cron, candidates].filter(Boolean).join(' · ')
   dragTip.value.visible = true
+  void nextTick(() => { if (tooltipRef.value && dragTip.value.visible) onWindowMouseMove({ clientX: lastClientX, clientY: lastClientY }) })
 }
 
 function hideTip() {
@@ -490,7 +593,7 @@ function resizeTimelineToViewport() {
       Math.max(MIN_GANTT_HEIGHT, availableHeight),
     )
     if (ganttHeight.value !== nextHeight) ganttHeight.value = nextHeight
-    nextTick(() => timeline?.redraw?.())
+    nextTick(() => { timeline?.redraw?.(); scheduleTaskNamePaint() })
   })
 }
 
@@ -539,24 +642,96 @@ const dynamicStyles = computed(() => {
 
 // 任务 → vis-timeline items（每个任务独占一行，group 用 task.id）
 // 注意：不再写 title 字段，统一用自渲染 tooltip 显示，避免浏览器原生 tooltip 干扰
+const nameSourceItems = new Map()
+let taskNameRaf = null
+function scheduleTaskNamePaint() {
+  if (!props.showTaskNames || taskNameRaf != null) return
+  taskNameRaf = requestAnimationFrame(() => {
+    taskNameRaf = null
+    if (!timeline || !itemsDataset || !props.showTaskNames) return
+    const labels = [], removed = []
+    for (const [id, source] of nameSourceItems) {
+      const painted = withTaskName(source.items, source.task)
+      const label = painted[painted.length - 1]
+      if (label?._task_name_label) labels.push(label)
+      else if (itemsDataset.get(`${id}:task-name`)) removed.push(`${id}:task-name`)
+    }
+    // Finish all layout reads before writing labels to avoid reflow for every task.
+    if (removed.length) itemsDataset.remove(removed)
+    if (labels.length) itemsDataset.update(labels)
+  })
+}
+// Non-interactive name paint follows the first visible occurrence, after its badge.
+function withTaskName(items, task) {
+  nameSourceItems.set(task.view_id || task.id, { items, task })
+  if (!props.showTaskNames || !items.length) return items
+  const viewport = timeline?.getWindow() || { start: new Date(`${DUMMY_DATE}T00:00:00`), end: new Date(new Date(`${DUMMY_DATE}T00:00:00`).getTime() + DEFAULT_TIMELINE_WINDOW_MS) }
+  const left = viewport.start.getTime(), right = viewport.end.getTime()
+  const anchor = items.map(item => ({ item, start: Math.max(left, item.start.getTime()), end: Math.min(right, item.end.getTime()) })).find(item => item.end >= item.start)
+  if (!anchor) return items
+  const name = document.createElement('span')
+  name.className = 'gantt-task-name-text'
+  name.textContent = task.task
+  const badgeVisible = anchor.item.start.getTime() >= left
+  const panel = containerRef.value?.querySelector('.vis-panel.vis-center')
+  const panelWidth = panel?.clientWidth || 0
+  const bounds = panel?.getBoundingClientRect() || { left: 0, right: 0 }
+  const anchorX = panelWidth ? (anchor.start - left) / (right - left) * panelWidth : 0
+  const content = timeline?.itemSet?.items?.[anchor.item.id]?.dom?.content
+  const offset = taskNameOffset(content, bounds.left + anchorX, bounds, badgeVisible ? anchor.item.content : '')
+  if (panelWidth > 0) {
+    name.style.maxWidth = `${Math.max(1, Math.min(320, window.innerWidth * .45, panelWidth - anchorX - offset - 4))}px`
+  }
+  name.style.transform = `translateX(${offset}px)`
+  return [...items, { id: `${task.view_id || task.id}:task-name`, group: task.view_id || task.id,
+    type: 'point', start: new Date(anchor.start), content: name,
+    editable: false, className: `gantt-task-name-overlay${task.shared_candidate ? ' shared-name' : ''}`, _task_name_label: true }]
+}
+
 function buildItems(tasks) {
-  return tasks.map(t => {
+  nameSourceItems.clear()
+  return tasks.flatMap(t => {
     const { start, end } = parseTimeToDate(t.start, t.finish)
-    const freq = getTaskFrequencyBadge(t.tags)
+    const freq = getTaskFrequencyBadge(t.tags, t.timing_mode)
     const classes = [botClassName(t.bot)]
+    const indicator = props.showRunStatus ? taskRunIndicators(t, props.runStatus) : null
+    if (indicator) classes.push('with-run-strip')
+    const runFields = (first, last) => {
+      if (!indicator) return {}
+      const result = indicator(first, last)
+      return { style: `--run-status-strip: ${result.background};`, _run_hint: result.hint }
+    }
+    if (t._preview_modified) classes.push('task-preview-modified')
+    const viewId = t.view_id || t.id
+    if (t.shared_candidate) classes.push('shared-candidate')
     // 历史任务保持 task-locked（最淡）；仅含周/月的非历史任务淡化（浓于历史任务）
     if (!t.can_edit) classes.push('task-locked')
     else if (freq.faded) classes.push('freq-faded')
-    return {
-      id: t.id,
-      group: t.id, // 每个任务独占一个 group → 一行
+    if (t.timing_mode === 'cron') {
+      const win = timeline?.getWindow()
+      const range = win ? win.end.getTime() - win.start.getTime() : DEFAULT_TIMELINE_WINDOW_MS
+      const bucket = Math.max(60, Math.ceil(range / 1000 / 120 / 60) * 60)
+      const base = new Date(`${DUMMY_DATE}T00:00:00`).getTime()
+      try {
+        return withTaskName(cronTemplateSegments(t.schedule_cron_expression, t.expected_duration_seconds || 60, bucket).map(segment => ({
+          id: `${viewId}:cron:${segment.start}`, group: viewId,
+          start: new Date(base + segment.start * 1000), end: new Date(base + segment.end * 1000),
+          content: segment.count > 1 ? `🔁 ×${segment.count}` : '<span class="freq-badge">🔁</span>',
+          editable: false, className: [...classes, 'cron-occurrence', segment.count > 1 ? 'cron-aggregate' : ''].join(' '),
+          _raw: t, _cron_count: segment.count, ...runFields(segment.start, segment.last),
+        })), t)
+      } catch { return [] }
+    }
+    return withTaskName([{
+      id: viewId,
+      group: viewId,
       content: freq.badge ? `<span class="freq-badge">${freq.badge}</span>` : '', // 左侧周期 emoji
       start,
       end,
-      editable: t.can_edit ? { updateTime: true, updateGroup: false, remove: false } : false,
+      editable: t.can_edit && !t.shared_candidate ? { updateTime: true, updateGroup: false, remove: false } : false,
       className: classes.join(' '),
-      _raw: t,
-    }
+      _raw: t, ...runFields(),
+    }], t)
   })
 }
 
@@ -588,7 +763,8 @@ function buildGroupLabel(t) {
   const ownerName = t.owner?.display_name || '历史任务'
   const row = document.createElement('div')
   row.className = t.can_edit ? 'gantt-label-row' : 'gantt-label-row is-locked'
-  row.title = `${t.task} · ${t.bot} · ${ownerName}`
+  row.title = `${t.task} · ${t.bot} · ${ownerName}${t.timing_mode === 'cron' ? ` · ${cronTemplateSummary(t.schedule_cron_expression, t.expected_duration_seconds || 60)}` : ''}`
+  if (candidateExecutionText(t)) row.title += ` · ${candidateExecutionText(t)}`
 
   const dot = document.createElement('span')
   dot.className = 'gantt-label-dot'
@@ -596,7 +772,7 @@ function buildGroupLabel(t) {
 
   const name = document.createElement('span')
   name.className = 'gantt-label-name'
-  name.textContent = t.task
+  name.textContent = `${t.shared_candidate ? `${t.bot} · 候选 · ` : ''}${t.timing_mode === 'cron' ? '🔁 ' : ''}${t.task}${t.timing_mode === 'cron' && !t.schedule_cron_expression ? '（规则待同步）' : ''}`
 
   const owner = document.createElement('span')
   owner.className = 'gantt-label-owner'
@@ -612,10 +788,10 @@ function buildGroupLabel(t) {
 
 function buildGroups(tasks) {
   return tasks.map((t, idx) => ({
-    id: t.id,
+    id: t.view_id || t.id,
     order: idx, // 配合 timeline option `groupOrder: 'order'` 控制行序
     content: buildGroupLabel(t),
-    className: botClassName(t.bot),
+    className: `${botClassName(t.bot)}${t.shared_candidate ? ' shared-candidate-label' : ''}`,
     _bot: t.bot,
     _start: t.start,
   }))
@@ -626,6 +802,7 @@ function createTimeline() {
 
   itemsDataset = new DataSet(buildItems(props.tasks))
   groupsDataset = new DataSet(buildGroups(props.tasks))
+  const dayStart = new Date(`${DUMMY_DATE}T00:00:00`)
 
   const options = {
     stack: false,
@@ -646,11 +823,12 @@ function createTimeline() {
     height: '100%',
     groupHeightMode: 'fixed',
     groupOrder: 'order',
-    min: new Date(`${DUMMY_DATE}T00:00:00`),
+    // 凌晨居中时左侧需要延伸到前一天，避免被 vis 的边界钳制。
+    min: new Date(dayStart.getTime() - DEFAULT_TIMELINE_WINDOW_MS / 2),
     max: new Date('2025-01-02T23:59:59'),
-    start: new Date(`${DUMMY_DATE}T08:00:00`),
-    end: new Date(`${DUMMY_DATE}T13:00:00`),
-    zoomMin: 1000 * 60 * 5, // 5 分钟
+    start: dayStart,
+    end: new Date(dayStart.getTime() + DEFAULT_TIMELINE_WINDOW_MS),
+    zoomMin: MIN_ZOOM_WINDOW_MS, // 5 分钟
     zoomMax: 1000 * 60 * 60 * 30, // 30 小时
     format: {
       minorLabels: { minute: 'HH:mm', hour: 'HH:mm' },
@@ -659,7 +837,7 @@ function createTimeline() {
     onMoving: (item, callback) => {
       // 拖拽过程中实时刷新自渲染 tooltip
       const raw = item._raw
-      if (!raw?.can_edit) {
+      if (!raw?.can_edit || raw.timing_mode === 'cron' || raw.shared_candidate) {
         callback(null)
         return
       }
@@ -678,7 +856,7 @@ function createTimeline() {
       callback(item)
     },
     onMove: (item, callback) => {
-      if (!item._raw?.can_edit) {
+      if (!item._raw?.can_edit || item._raw.timing_mode === 'cron' || item._raw.shared_candidate) {
         callback(null)
         return
       }
@@ -705,13 +883,17 @@ function createTimeline() {
   }
 
   timeline = new Timeline(containerRef.value, itemsDataset, groupsDataset, options)
-  timeline.addCustomTime(new Date(`${DUMMY_DATE}T08:30:00`), REFERENCE_TIME_ID)
-  timeline.setCustomTimeTitle('', REFERENCE_TIME_ID)
+  scheduleTaskNamePaint()
+  configureReferenceLines()
+  configureCurrentTimeLine()
 
   // 视窗变化（缩放/平移）后按新区间重算时间轴高亮层位置
   // 注意：vis-timeline 没有 redraw 事件，rangechange/rangechanged 是公开 API 里覆盖视窗变化的事件
-  timeline.on('rangechange', () => updateAxisOverlay())
-  timeline.on('rangechanged', () => updateAxisOverlay())
+  timeline.on('rangechange', () => { handleRangeChange(); scheduleTaskNamePaint() })
+  timeline.on('rangechanged', () => {
+    handleRangeChange()
+    if (props.showTaskNames || props.tasks.some(task => task.timing_mode === 'cron')) updateData()
+  })
 
   // 单击：触发编辑
   timeline.on('click', props_evt => {
@@ -722,9 +904,10 @@ function createTimeline() {
         // _raw 是 buildItems 时的原始引用，时间可能已被拖拽更新过；
         // 这里从 dataset 拿到最新 start/end 重新组装，避免回填旧时间。
         const latest = {
-          ...item._raw,
-          start: formatTime(item.start),
-          finish: formatTime(item.end || item.start),
+          ...sourceTask(item._raw),
+          ...(item._raw.timing_mode === 'cron' || item._raw.shared_candidate ? {} : {
+            start: formatTime(item.start), finish: formatTime(item.end || item.start),
+          }),
         }
         emit('task-click', latest)
       }
@@ -742,6 +925,8 @@ function createTimeline() {
       formatTime(item.start),
       formatTime(item.end || item.start)
     )
+    if (props.showRunStatus) dragTip.value.runStatus = item._run_hint || ''
+    if (item._cron_count > 1) dragTip.value.cron += ` · 此段汇总 ${item._cron_count} 次计划`
   })
 
   // Hover：离开 item 隐藏（拖拽中可能短暂离开 item 区域，此时不要隐藏）
@@ -749,6 +934,22 @@ function createTimeline() {
     if (isDragging) return
     hideTip()
   })
+
+  // 先让起始视窗完成一帧绘制，再播放滑向当前时间的动画。
+  if (autoScroll.value) initialFocusRaf = requestAnimationFrame(() => {
+    initialFocusRaf = requestAnimationFrame(() => {
+      initialFocusRaf = null
+      if (autoScroll.value) resetTimeline()
+    })
+  })
+}
+
+function handleRangeChange() {
+  if (!timeline) return
+  updateAxisOverlay()
+  const { start, end } = timeline.getWindow()
+  // vis 的时间窗口可能存在毫秒取整误差；仅在最大放大倍率显示彩蛋。
+  referenceEasterEgg.value = end.getTime() - start.getTime() <= MIN_ZOOM_WINDOW_MS + 1
 }
 
 function formatTime(date) {
@@ -778,6 +979,7 @@ function updateData() {
   const savedTop = itemset ? itemset.scrollTop : null
   syncDataset(groupsDataset, buildGroups(props.tasks))
   syncDataset(itemsDataset, buildItems(props.tasks))
+  scheduleTaskNamePaint()
   // syncDataset 会把不在 buildItems 里的冻结带删掉，这里按当前状态补回/清除
   renderBandItem()
   if (savedTop != null && itemset) itemset.scrollTop = savedTop
@@ -789,10 +991,13 @@ function fitTimeline() {
 
 function resetTimeline() {
   if (!timeline) return
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
+  const { start, end } = getCurrentTimeWindow()
   timeline.setWindow(
-    new Date(`${DUMMY_DATE}T08:00:00`),
-    new Date(`${DUMMY_DATE}T13:00:00`),
-    { animation: { duration: 300 } }
+    start,
+    end,
+    { animation: { duration: 1200, easingFunction: 'easeInOutQuad' } }
   )
 }
 
@@ -807,6 +1012,10 @@ watch(
     // 拖拽自身触发的数据回流：vis 已经显示了新位置，跳过一次同步避免重排闪烁
     if (suppressNextUpdate) {
       suppressNextUpdate = false
+      // 拖动位置已经更新，仍需同步预览标识和原任务，保证红框立即出现。
+      for (const item of buildItems(props.tasks)) {
+        if (itemsDataset.get(item.id)) itemsDataset.update(item._task_name_label ? item : { id: item.id, className: item.className, _raw: item._raw })
+      }
       return
     }
     updateData()
@@ -815,7 +1024,14 @@ watch(
   { deep: true }
 )
 
+watch([() => props.showRunStatus, () => props.runStatus], () => { updateData(); timeline?.redraw?.() }, { deep: true })
+watch(() => props.showCurrentTimeLine, configureCurrentTimeLine)
+watch(() => props.showReferenceLines, configureReferenceLines)
+
+watch(() => props.showTaskNames, enabled => { taskSidebarExpanded.value = !enabled; updateData(); void refreshTaskSidebar() })
+
 onMounted(() => {
+  saveAutoScroll()
   resizeTimelineToViewport()
   createTimeline()
   window.addEventListener('resize', resizeTimelineToViewport, { passive: true })
@@ -856,6 +1072,12 @@ function hideDragTip() {
 }
 
 onBeforeUnmount(() => {
+  clearInterval(currentTimeTimer)
+  currentTimeTimer = null
+  currentTimeLineAdded = false
+  if (taskNameRaf != null) cancelAnimationFrame(taskNameRaf)
+  taskNameRaf = null
+  nameSourceItems.clear()
   window.removeEventListener('pointermove', onWindowMouseMove, { capture: true })
   window.removeEventListener('mousemove', onWindowMouseMove, { capture: true })
   window.removeEventListener('pointerup', hideDragTip, { capture: true })
@@ -876,6 +1098,8 @@ onBeforeUnmount(() => {
   containerResizeObserver = null
   if (resizeRaf != null) cancelAnimationFrame(resizeRaf)
   resizeRaf = null
+  if (initialFocusRaf != null) cancelAnimationFrame(initialFocusRaf)
+  initialFocusRaf = null
   stopAutoScroll()
   if (timeline) {
     timeline.destroy()
@@ -887,6 +1111,18 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Keep label heights measurable while letting vis recalculate the left gutter to zero. */
+.gantt-sidebar-collapsed :deep(.vis-panel.vis-left) { width: 0 !important; min-width: 0 !important; max-width: 0 !important; overflow: hidden !important; border-right: 0 !important; }
+.gantt-sidebar-collapsed :deep(.vis-labelset), .gantt-sidebar-collapsed :deep(.vis-labelset .vis-label) { width: 0 !important; min-width: 0 !important; max-width: 0 !important; overflow: hidden; }
+.gantt-container :deep(.vis-item.with-run-strip::after) { content: ''; position: absolute; inset: 0; background: var(--run-status-strip, #9ca3af); border-radius: inherit; clip-path: inset(calc(100% - 4px) 0 0); pointer-events: none; z-index: 1; }
+.gantt-sidebar-toggle { position: absolute; top: 5px; left: 4px; z-index: 12; width: 22px; background: var(--page, #fff); font-size: 20px; }
+.gantt-container :deep(.vis-item.gantt-task-name-overlay) { background: transparent !important; border: 0 !important; pointer-events: none !important; z-index: 5; top: calc(50% - 10px) !important; box-shadow: none !important; overflow: visible; color: var(--ink, #24352a); font-size: 11px; }
+.gantt-container :deep(.gantt-task-name-overlay .vis-dot) { display: none; }
+.gantt-container :deep(.gantt-task-name-overlay .vis-item-content) { margin: 0 !important; padding: 0 !important; width: max-content !important; pointer-events: none; }
+.gantt-container :deep(.gantt-task-name-text) { display: block; max-width: min(320px, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px; padding: 0 4px; border-radius: 0; background: transparent; text-shadow: 0 0 2px #fff, 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff; font-weight: 500; pointer-events: none; }
+.gantt-container :deep(.gantt-task-name-overlay.shared-name) { opacity: .75; }
+.gantt-container :deep(.vis-item.cron-occurrence) { min-width: 3px; }
+.gantt-container :deep(.vis-item.cron-aggregate) { background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,.25) 5px 8px); }
 .gantt-viewport {
   position: relative;
   width: 100%;
@@ -915,6 +1151,8 @@ onBeforeUnmount(() => {
 <style>
 /* 自渲染拖拽 tooltip —— teleport 到 body，不能用 scoped */
 .gantt-drag-tip {
+  max-width: min(520px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
   position: fixed;
   z-index: 9999;
   pointer-events: none;
@@ -1009,10 +1247,10 @@ onBeforeUnmount(() => {
    stack:false 时 vis 把每个任务条钉在 top = margin.item.vertical(4px)，而行高(31px)由更高的
    左侧标签撑起，导致任务条偏上、底部留白(4px/7px)。
    item 的 top 相对其所属 .vis-group 容器（高度=行高），用 50% 取行中线，再减去任务条自身高度的一半
-   (固定 20px → 10px) 上移回正，实现与网格行居中。!important 覆盖 vis 写入的内联 top。
+   按任务条公共高度减去一半，保持加高后的任务条在轨道中间。!important 覆盖 vis 写入的内联 top。
    （不用 translateY(-50%)：vis-item 上的 transform 会被内部样式覆盖而失效。） */
 .vis-foreground .vis-item.vis-range {
-  top: calc(50% - 10px) !important;
+  top: calc(50% - var(--gantt-task-height, 26px) / 2) !important;
 }
 /* 周期 emoji：任务条左侧、垂直居中。
    注意 vis 的 .vis-item.vis-range .vis-item-content 是 position:relative + padding:5px，
@@ -1080,12 +1318,37 @@ onBeforeUnmount(() => {
   pointer-events: none !important;
 }
 /* 固定排班参考线；与冻结标记独立，不参与鼠标交互。 */
-.gantt-container .vis-custom-time.schedule-reference {
-  background-color: var(--muted);
-  width: 2px;
+.gantt-container .vis-custom-time:is(.schedule-reference, .schedule-reference-evening) {
+  background: repeating-linear-gradient(to bottom, var(--muted) 0 4px, transparent 4px 8px);
+  width: 1px;
   pointer-events: none;
 }
-.gantt-container .vis-custom-time.schedule-reference * {
+.gantt-container.gantt-reference-easter-egg .vis-custom-time:is(.schedule-reference, .schedule-reference-evening, .schedule-current) {
+  background: none;
+}
+.gantt-container.gantt-reference-easter-egg .vis-custom-time:is(.schedule-reference, .schedule-reference-evening, .schedule-current)::after {
+  content: var(--reference-mantra);
+  position: absolute;
+  top: 48px;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  white-space: nowrap;
+  font-size: 8px;
+  width: 1em;
+  overflow: hidden;
+  line-height: 1;
+  letter-spacing: 1px;
+  color: var(--timeline-line-color, var(--muted));
   pointer-events: none;
 }
+.gantt-container .vis-custom-time:is(.schedule-reference, .schedule-reference-evening, .schedule-current) * {
+  pointer-events: none;
+}
+</style>
+
+<style>
+.gantt-container .vis-custom-time.schedule-current { --timeline-line-color: #008c45; background: repeating-linear-gradient(to bottom, var(--timeline-line-color) 0 4px, transparent 4px 8px); width: 1px; pointer-events: none; }
 </style>

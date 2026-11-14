@@ -11,6 +11,26 @@ const { createRetentionService } = require('../server/services/retentionService.
 const { EXECUTION_STATUS } = require('../server/services/executionStatus.cjs');
 const { sanitizeForLog } = require('../server/services/yingdaoClient.cjs');
 
+test('循环规则同步保留失败前规则，携带绑定代次且不查询单段任务', async () => {
+  const writes = [];
+  let failing = false;
+  const coordinator = createSyncCoordinator({
+    client: { async getScheduleDetail() { if (failing) throw new Error('temporary unavailable'); return { schedule: { cronInterface: { type: 'cron', cronExpress: '0 0-8/2 * * *' } } }; } },
+    tasksRepository: { async updateScheduleCron(attempt, fields) { writes.push({ attempt, fields }); } },
+    executionsRepository: {},
+  });
+  const attempt = { taskId: '1', scheduleUuid: 's1', scheduleBoundAt: '2026-10-21T00:00:00Z', syncGeneration: '3' };
+  await coordinator._syncCron({ timingMode: 'single' }, attempt);
+  assert.equal(writes.length, 0);
+  await coordinator._syncCron({ timingMode: 'cron' }, attempt);
+  assert.equal(writes[0].fields.expression, '0 0-8/2 * * *');
+  assert.deepEqual(writes[0].attempt, attempt);
+  failing = true;
+  await coordinator._syncCron({ timingMode: 'cron' }, attempt);
+  assert.equal(writes[1].fields.expression, undefined);
+  assert.match(writes[1].fields.error, /temporary unavailable/);
+});
+
 function deferred() {
   let resolve;
   let reject;
@@ -20,6 +40,28 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
+
+test('共享候选缓存适用于常规任务，失败和陈旧响应不能清除有效缓存', async () => {
+  const writes = [];
+  let response = { schedule: { executeScope: 'any', clientScope: 'assign', robotClientList: [{ uuid: 'a', robotClientName: 'admin@tenant', password: 'secret' }] } };
+  const coordinator = createSyncCoordinator({
+    client: { async getScheduleDetail() { if (response instanceof Error) throw response; return response; } },
+    tasksRepository: { async updateScheduleDispatch(attempt, fields) { writes.push({ attempt, fields }); } },
+    executionsRepository: {},
+  });
+  const attempt = { taskId: '1', scheduleUuid: 's', syncGeneration: 2 };
+  await coordinator._syncCron({ timingMode: 'single' }, attempt);
+  assert.equal(writes[0].fields.dispatch.clients[0].id, 'a');
+  assert.equal(JSON.stringify(writes).includes('secret'), false);
+  response = new Error('temporarily unavailable');
+  await coordinator._syncCron({ timingMode: 'single' }, attempt);
+  assert.equal(writes[1].fields.dispatch, undefined);
+  assert.match(writes[1].fields.error, /temporarily/);
+  response = { schedule: {}, cache: { stale: true } };
+  await coordinator._syncCron({ timingMode: 'single' }, attempt);
+  assert.equal(writes[2].fields.dispatch, undefined);
+  assert.ok(writes[2].fields.error);
+});
 
 function createFakeRepositories(tasks) {
   const taskRows = tasks.map(task => ({ syncGeneration: 0, ...task }));

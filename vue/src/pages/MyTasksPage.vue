@@ -67,6 +67,7 @@
       :reserved-schedule-uuids="reservedScheduleUuids"
       @submit="handleEditorSubmit"
       @delete="handleEditorDelete"
+      @hidden="handleTaskHidden"
     />
 
     <n-modal v-model:show="rebindVisible" preset="card" title="换绑影刀计划" class="responsive-modal compact-modal">
@@ -127,12 +128,18 @@ import ExecutionHistoryDialog from '../components/ExecutionHistoryDialog.vue'
 import SchedulePicker from '../components/SchedulePicker.vue'
 import TaskEditor from '../components/TaskEditor.vue'
 import { auth } from '../services/authService.js'
+import { useMachineColorPreference, applyMachineColors } from '../services/machineColorPreference.js'
 import { decorateTask, formatDateTime, statusType, summarizeSyncCutoff } from '../services/dataService.js'
 import { getUsers, rebindTask, runTask, syncMyTasks, syncTask, transferTask } from '../services/taskService.js'
 import { myTaskStore as store } from '../stores/taskDraftStore.js'
 
 const message = useMessage()
 const dialog = useDialog()
+async function handleTaskHidden() {
+  try { await store.load({ preserveDraft: true, silent: true }) }
+  catch (error) { message.error(`任务已隐藏，但页面刷新失败：${error.message}`) }
+}
+
 const query = ref('')
 const selectedTags = ref([])
 const selectedStatuses = ref([])
@@ -178,9 +185,10 @@ const transferUserOptions = computed(() => users.value
   .filter(user => String(user.id) !== String(auth.user?.id))
   .map(user => ({ label: user.display_name, value: String(user.id) })))
 
+const { colors: customMachineColors } = useMachineColorPreference()
 const filteredTasks = computed(() => {
   const term = query.value.trim().toLocaleLowerCase('zh-CN')
-  const rows = store.tasks.value.map(decorateTask).filter(task => {
+  const rows = applyMachineColors(store.tasks.value.map(task => decorateTask(task)), customMachineColors.value).filter(task => {
     if (term && !task.task.toLocaleLowerCase('zh-CN').includes(term)) return false
     if (selectedTags.value.length && !selectedTags.value.every(tag => task.tags.includes(tag))) return false
     if (selectedStatuses.value.length && !selectedStatuses.value.includes(task.normalized_status)) return false
@@ -199,10 +207,10 @@ const columns = computed(() => [
   { title: '任务名称', key: 'task', width: 190, ellipsis: { tooltip: true } },
   {
     title: '标签', key: 'tags', width: 180,
-    render: row => h(NSpace, { size: 4 }, () => (row.tags.length ? row.tags : ['—']).map(tag => h(NTag, { size: 'small', bordered: false }, () => tag))),
+    render: row => h(NSpace, { size: 4 }, () => (row.timing_mode === 'cron' ? ['🔁', ...row.tags] : row.tags.length ? row.tags : ['—']).map(tag => h(NTag, { size: 'small', bordered: false }, () => tag))),
   },
-  { title: '时间', key: 'time', width: 190, render: row => `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
-  { title: 'Bot', key: 'bot', width: 150, ellipsis: { tooltip: true } },
+  { title: '时间', key: 'time', width: 190, render: row => row.timing_mode === 'cron' ? row.cronSummary : `${row.start.slice(0, 5)} → ${row.finish.slice(0, 5)}${row.crossDay ? '（次日）' : ''}` },
+  { title: 'Bot', key: 'bot', width: 150, ellipsis: { tooltip: true }, render: row => row.schedule_dispatch?.execute_scope === 'any' && row.schedule_dispatch.clients?.length > 1 ? `任选1台（${row.schedule_dispatch.clients.length}台候选）` : row.bot },
   {
     title: '最新状态', key: 'normalized_status', width: 110,
     render: row => h(NTag, { size: 'small', bordered: false, type: statusType(row.normalized_status) }, () => row.normalized_status),

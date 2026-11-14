@@ -2,7 +2,7 @@
   <n-layout class="app-layout">
     <n-layout-header bordered class="app-header">
       <router-link class="header-logo" to="/schedule" aria-label="任务看板首页">
-        <img class="header-logo-mark" src="/brand/kocotree-mark.svg" alt="KOCOTREE" width="32" height="32" />
+        <img class="header-logo-mark" :src="'/brand/kocotree-mark.svg'" alt="KOCOTREE" width="32" height="32" />
         <span class="header-logo-text">
           <strong class="header-title">RPA 任务看板</strong>
           <small class="header-subtitle">排班沙盘与运行状态</small>
@@ -45,11 +45,14 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
+import { planSyncStore } from '../stores/planSyncStore.js'
 import { useRoute, useRouter } from 'vue-router'
 import { NAvatar, NButton, NLayout, NLayoutContent, NLayoutFooter, NLayoutHeader, NTag } from 'naive-ui'
 import { auth, feishuAuthorizationUrl, logout } from '../services/authService.js'
 import { hasAnyUnsavedTasks, resetAllTaskStores } from '../stores/taskDraftStore.js'
+
+watch(() => auth.user?.id, id => planSyncStore.connectUser(id), { immediate: true })
 
 const router = useRouter()
 const route = useRoute()

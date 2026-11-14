@@ -1,9 +1,10 @@
 const { spawn } = require('child_process');
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const spawnOptions = { stdio: 'inherit', shell: process.platform === 'win32' };
 const children = [
-  spawn(npmCommand, ['run', 'server'], { stdio: 'inherit', shell: false }),
-  spawn(npmCommand, ['run', 'dev'], { stdio: 'inherit', shell: false }),
+  spawn(npmCommand, ['run', 'server'], spawnOptions),
+  spawn(npmCommand, ['run', 'dev'], spawnOptions),
 ];
 let stopping = false;
 

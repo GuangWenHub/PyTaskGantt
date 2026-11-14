@@ -3,7 +3,7 @@
     <section class="login-showcase">
       <div class="login-showcase-inner">
         <div class="login-brand">
-          <img class="login-brand-logo" src="/brand/kocotree-logo.svg" alt="KOCOTREE" width="171" height="44" />
+          <img class="login-brand-logo" :src="'/brand/kocotree-logo.svg'" alt="KOCOTREE" width="171" height="44" />
           <span class="login-brand-name">RPA 任务看板</span>
         </div>
 

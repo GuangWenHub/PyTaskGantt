@@ -7,6 +7,7 @@ const {
 const { parseBatch } = require('./taskValidation.cjs');
 const { loadTasksByIds } = require('./taskQueries.cjs');
 const { timestampAfter } = require('../db/values.cjs');
+const { appendTaskHistory } = require('../db/taskHistoryRepository.cjs');
 
 const FIELD_TO_COLUMN = {
   task: 'task',
@@ -15,16 +16,21 @@ const FIELD_TO_COLUMN = {
   bot: 'bot',
   tags: 'tags',
   note: 'note',
+  timing_mode: 'timing_mode',
+  expected_duration_seconds: 'expected_duration_seconds',
 };
 
-async function addAudit(client, { taskId, actorUserId, action, oldValue = null, newValue = null }) {
+async function addAudit(client, { taskId, actorUserId, action, oldValue = null, newValue = null, beforeTask, afterTask, sourceAuditId, historyScope }) {
   const result = await client.query(
     `INSERT INTO rpa_task_audit_log (task_id, actor_user_id, action, old_value, new_value)
      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
      RETURNING id`,
     [taskId, actorUserId, action, JSON.stringify(oldValue), JSON.stringify(newValue)]
   );
-  return result.rows && result.rows[0] ? result.rows[0].id : null;
+  const auditId = result.rows && result.rows[0] ? result.rows[0].id : null;
+  if (auditId == null) throw new Error('操作审计写入失败');
+  await appendTaskHistory(client, { auditId, taskId, actorUserId, action, beforeTask, afterTask, sourceAuditId, historyScope });
+  return auditId;
 }
 
 function assertOwner(row, userId) {
@@ -75,12 +81,12 @@ async function validateSchedule(scheduleDirectory, scheduleUuid, context) {
   if (!scheduleDirectory || typeof scheduleDirectory.assertBindable !== 'function') {
     throw new Error('计划目录服务未配置 assertBindable');
   }
-  await scheduleDirectory.assertBindable(scheduleUuid, context);
+  return scheduleDirectory.assertBindable(scheduleUuid, context);
 }
 
 function createTaskMutationService({ pool, scheduleDirectory }) {
   return {
-    async applyBatch(actorInput, body) {
+    async applyBatch(actorInput, body, { syncPlans = null, beforeCommit = null } = {}) {
       const actor = normalizeActor(actorInput);
       const userId = actor.userId;
       const input = parseBatch(body);
@@ -90,8 +96,30 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
       if (new Set(createSchedules).size !== createSchedules.length) {
         throw new ConflictError('SCHEDULE_ALREADY_BOUND', '同一批次不能重复绑定同一个影刀计划');
       }
+      const dispatchBySchedule = new Map();
       for (const scheduleUuid of createSchedules) {
-        await validateSchedule(scheduleDirectory, scheduleUuid, { actorUserId: userId });
+        const result = await validateSchedule(scheduleDirectory, scheduleUuid, { actorUserId: userId });
+        const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
+        dispatchBySchedule.set(scheduleUuid, normalizeScheduleDispatch(result?.schedule));
+      }
+
+      const cronByMutation = new Map();
+      for (const mutation of input.mutations) {
+        const syncPlan = syncPlans?.get(mutation.temp_id || mutation.id);
+        if (syncPlan) {
+          cronByMutation.set(mutation.temp_id || mutation.id, { expression: syncPlan.expression || null, fetched_at: syncPlan.fetched_at, stale: false });
+          continue;
+        }
+        if ((mutation.type === 'create' ? mutation.timing_mode : mutation.changes?.timing_mode) !== 'cron') continue;
+        let uuid = mutation.schedule_uuid;
+        if (mutation.type === 'update') {
+          const { rows } = await pool.query('SELECT * FROM rpa_tasks WHERE id = $1 AND deleted_at IS NULL', [mutation.id]);
+          assertOwner(rows[0], actor);
+          if (Number(rows[0].version) !== mutation.version) throw new ConflictError('VERSION_CONFLICT');
+          uuid = rows[0].schedule_uuid;
+        }
+        const cron = await scheduleDirectory.getCron(uuid);
+        cronByMutation.set(mutation.temp_id || mutation.id, cron);
       }
 
       const client = await pool.connect();
@@ -107,15 +135,22 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
             const { rows } = await client.query(
               `INSERT INTO rpa_tasks (
                  task, start_time, finish_time, bot, tags, note,
-                 created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at
+                 created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at,
+                 timing_mode, expected_duration_seconds, schedule_cron_expression, schedule_cron_synced_at, schedule_cron_error,
+                 schedule_dispatch, schedule_dispatch_synced_at
                ) VALUES (
                  $1, $2, $3, $4, $5::text[], $6, $7, $7, $8,
-                 date_trunc('milliseconds', clock_timestamp())
+                 date_trunc('milliseconds', clock_timestamp()), $9, $10, $11, $12, $13, $14::jsonb, clock_timestamp()
                )
                RETURNING *`,
               [
                 mutation.task, mutation.start, mutation.finish, mutation.bot,
                 mutation.tags, mutation.note, userId, mutation.schedule_uuid,
+                mutation.timing_mode, mutation.expected_duration_seconds,
+                cronByMutation.get(mutation.temp_id)?.expression || null,
+                cronByMutation.get(mutation.temp_id)?.fetched_at || null,
+                cronByMutation.get(mutation.temp_id)?.stale ? '影刀暂不可用，沿用缓存规则' : null,
+                JSON.stringify(dispatchBySchedule.get(mutation.schedule_uuid) || {}),
               ]
             );
             const row = rows[0];
@@ -131,6 +166,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               taskId: row.id,
               actorUserId: userId,
               action: input.audit_action || 'create',
+              beforeTask: null,
+              afterTask: row,
               newValue: {
                 task: row.task,
                 start: row.start_time,
@@ -138,6 +175,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
                 bot: row.bot,
                 tags: row.tags,
                 note: row.note,
+                timing_mode: row.timing_mode,
+                expected_duration_seconds: row.expected_duration_seconds,
                 schedule_uuid: row.schedule_uuid,
                 owner_user_id: String(userId),
               },
@@ -151,6 +190,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
 
           const current = await lockTask(client, mutation.id);
           assertOwner(current, actor);
+          const syncPlan = syncPlans?.get(mutation.id);
+          if (syncPlan && current.schedule_uuid !== syncPlan.schedule_uuid) throw new ConflictError('BINDING_CHANGED', '任务绑定已变化，请重新扫描');
           if (Number(current.version) !== mutation.version) {
             throw new ConflictError('VERSION_CONFLICT', `任务「${current.task}」已被其他操作修改`, {
               task_id: String(current.id),
@@ -166,6 +207,24 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               const cast = field === 'tags' ? '::text[]' : '';
               return `${FIELD_TO_COLUMN[field]} = $${index + 3}${cast}`;
             });
+            const cron = cronByMutation.get(mutation.id);
+            const append = (column, value, cast = '') => {
+              values.push(value);
+              assignments.push(`${column} = $${values.length + 2}${cast}`);
+            };
+            if (syncPlan) {
+              append('schedule_cron_expression', syncPlan.expression || null);
+              append('schedule_cron_synced_at', syncPlan.fetched_at);
+              append('schedule_cron_error', null);
+              append('schedule_dispatch', JSON.stringify(syncPlan.dispatch), '::jsonb');
+              append('schedule_dispatch_synced_at', syncPlan.fetched_at);
+              append('schedule_dispatch_error', null);
+              assignments.push('sync_generation = sync_generation + 1');
+            } else if (cron) {
+              append('schedule_cron_expression', cron.expression);
+              append('schedule_cron_synced_at', cron.fetched_at);
+              append('schedule_cron_error', cron.stale ? '影刀暂不可用，沿用缓存规则' : null);
+            }
             const { rows } = await client.query(
               `UPDATE rpa_tasks
                SET ${assignments.join(', ')}, version = version + 1, updated_at = now()
@@ -178,8 +237,10 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
               taskId: current.id,
               actorUserId: userId,
               action: 'update',
+              beforeTask: current,
+              afterTask: rows[0],
               oldValue: Object.fromEntries(entries.map(([field]) => [field, current[FIELD_TO_COLUMN[field]]])),
-              newValue: withAdminAudit(mutation.changes, actor, current.owner_user_id),
+              newValue: withAdminAudit({ ...mutation.changes, ...(syncPlan ? { plan_sync: true, schedule_dispatch: syncPlan.dispatch, schedule_cron_expression: syncPlan.expression || null } : {}) }, actor, current.owner_user_id),
             });
             changedIds.push(String(current.id));
             updated += 1;
@@ -200,7 +261,7 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
              SET deleted_at = $3, schedule_uuid = NULL, schedule_bound_at = NULL,
                  version = version + 1, updated_at = $3
              WHERE id = $1 AND version = $2 AND deleted_at IS NULL
-             RETURNING id`,
+             RETURNING *`,
             [current.id, mutation.version, deletedAt]
           );
           if (!rows[0]) throw new ConflictError('VERSION_CONFLICT');
@@ -208,6 +269,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
             taskId: current.id,
             actorUserId: userId,
             action: 'delete',
+            beforeTask: current,
+            afterTask: rows[0],
             oldValue: { schedule_uuid: current.schedule_uuid, version: current.version },
             newValue: withAdminAudit(
               { deleted_at: deletedAt.toISOString() },
@@ -219,6 +282,8 @@ function createTaskMutationService({ pool, scheduleDirectory }) {
         }
 
         const tasks = await loadTasksByIds(client, changedIds, actor);
+        // Reconciliation snapshots and task mutations must commit or roll back together.
+        if (beforeCommit) await beforeCommit(client);
         await client.query('COMMIT');
         return {
           success: true,

@@ -12,6 +12,23 @@ const {
 
 const immediateLimiter = { schedule: (_endpoint, operation) => operation() };
 
+test('Cron 目录仅返回解析后的五段规则，拒绝非 Cron 或不支持的语法', async () => {
+  let source = { type: 'cron', cronExpress: '0 0-8/2 * * *', secret: 'not-returned' };
+  const directory = createScheduleDirectory({ client: { async getScheduleDetail() { return { schedule: { cronInterface: source }, cache: { fetchedAt: '2026-10-21T00:00:00Z' } }; } } });
+  const result = await directory.getCron('schedule-cron');
+  assert.equal(result.expression, '0 0-8/2 * * *');
+  assert.equal(result.count, 5);
+  assert.equal(JSON.stringify(result).includes('not-returned'), false);
+  source = { type: 'cron', cronExpress: '0 22 L * *' };
+  const monthEnd = await directory.getCron('schedule-cron');
+  assert.equal(monthEnd.expression, '0 22 L * *');
+  assert.equal(monthEnd.count, 1);
+  source = { type: 'interval', cronExpress: '0 * * * *' };
+  await assert.rejects(() => directory.getCron('schedule-cron'), { code: 'SCHEDULE_CRON_MISSING' });
+  source = { type: 'cron', cronExpress: '0 0 0 * * ?' };
+  await assert.rejects(() => directory.getCron('schedule-cron'), { code: 'SCHEDULE_CRON_INVALID' });
+});
+
 function jsonResponse(status, body, headers = {}) {
   const normalizedHeaders = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), String(value)]));
   return {

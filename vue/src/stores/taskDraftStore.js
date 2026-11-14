@@ -1,9 +1,11 @@
 import { computed, reactive, readonly } from 'vue'
 import { getMyTasks, getTasks, normalizeTask, saveTaskMutations } from '../services/taskService.js'
 
-const CREATE_FIELDS = ['task', 'start', 'finish', 'bot', 'schedule_uuid', 'tags', 'note']
-const UPDATE_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note']
-const LIVE_FIELDS = ['normalized_status', 'last_run_at', 'last_synced_at', 'sync_error']
+const CREATE_FIELDS = ['task', 'start', 'finish', 'bot', 'schedule_uuid', 'tags', 'note', 'timing_mode', 'expected_duration_seconds']
+const UPDATE_FIELDS = ['task', 'start', 'finish', 'bot', 'tags', 'note', 'timing_mode', 'expected_duration_seconds']
+const CRON_CACHE_FIELDS = ['schedule_cron_expression', 'schedule_cron_synced_at', 'schedule_cron_error']
+const DISPATCH_CACHE_FIELDS = ['schedule_dispatch', 'schedule_dispatch_synced_at', 'schedule_dispatch_error']
+const LIVE_FIELDS = ['is_hidden', 'normalized_status', 'last_run_at', 'last_synced_at', 'sync_error', ...CRON_CACHE_FIELDS, ...DISPATCH_CACHE_FIELDS]
 
 function cloneTask(task) {
   return { ...task, tags: [...(task.tags || [])], owner: task.owner ? { ...task.owner } : null }
@@ -54,7 +56,7 @@ function taskChanges(task, saved) {
   return changes
 }
 
-export function createTaskDraftStore(loader, saver = saveTaskMutations) {
+export function createTaskDraftStore(loader, saver = saveTaskMutations, { previewOnly = false } = {}) {
   const state = reactive({
     tasks: [],
     savedTasks: {},
@@ -73,7 +75,8 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
   const activeLoads = new Set()
   const foregroundLoads = new Set()
 
-  const visibleTasks = computed(() => state.tasks.filter(task => !state.mutations[taskKey(task.id)]?._deleted))
+  const visibleTasks = computed(() => state.tasks.filter(task => !state.mutations[taskKey(task.id)]?._deleted)
+    .map(task => previewOnly ? { ...task, _preview_modified: Boolean(state.mutations[taskKey(task.id)]) } : task))
   const hasUnsaved = computed(() => Object.keys(state.mutations).length > 0)
   const mutationList = computed(() => Object.values(state.mutations).map(({ _deleted, ...mutation }) => mutation))
 
@@ -102,14 +105,30 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
       }
       const serverTask = serverMap.get(key)
       if (!serverTask) {
+        if (previewOnly) {
+          delete state.mutations[key]
+          delete state.savedTasks[key]
+          continue
+        }
         if (mutation) next.push(draft)
         else delete state.savedTasks[key]
         continue
       }
       serverMap.delete(key)
+      if (previewOnly && (!serverTask.can_edit || draft.schedule_uuid !== serverTask.schedule_uuid)) {
+        delete state.mutations[key]
+        state.savedTasks[key] = cloneTask(serverTask)
+        next.push(cloneTask(serverTask))
+        continue
+      }
       if (mutation) {
+        if (previewOnly) state.savedTasks[key] = cloneTask(serverTask)
         const merged = cloneTask(draft)
-        for (const field of LIVE_FIELDS) merged[field] = serverTask[field]
+        for (const field of LIVE_FIELDS) {
+          if (previewOnly && field in (mutation.changes || {})) continue
+          if (CRON_CACHE_FIELDS.includes(field) && draft.timing_mode !== serverTask.timing_mode) continue
+          merged[field] = serverTask[field]
+        }
         next.push(merged)
       } else {
         next.push(cloneTask(serverTask))
@@ -190,7 +209,7 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
     const index = state.tasks.findIndex(task => taskKey(task.id) === key)
     if (index < 0 || !state.tasks[index].can_edit) return null
     const allowedFields = state.tasks[index]._is_new || key.startsWith('tmp:') ? CREATE_FIELDS : UPDATE_FIELDS
-    const patch = pickFields(updates, allowedFields)
+    const patch = pickFields(updates, [...allowedFields, ...CRON_CACHE_FIELDS, ...DISPATCH_CACHE_FIELDS])
     if ('tags' in patch) patch.tags = normalizeTags(patch.tags)
     state.tasks[index] = normalizeTask({ ...state.tasks[index], ...patch })
     const task = state.tasks[index]
@@ -207,6 +226,12 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
     const saved = state.savedTasks[key]
     if (!saved) return task
     const changes = taskChanges(task, saved)
+    if (previewOnly && task.schedule_cron_expression !== saved.schedule_cron_expression) {
+      changes.schedule_cron_expression = task.schedule_cron_expression
+    }
+    if (previewOnly && JSON.stringify(task.schedule_dispatch) !== JSON.stringify(saved.schedule_dispatch)) {
+      changes.schedule_dispatch = task.schedule_dispatch
+    }
     if (Object.keys(changes).length) {
       state.mutations[key] = { type: 'update', id: key, version: saved.version, changes }
     } else {
@@ -231,6 +256,16 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
 
   function isDirty(id) {
     return Boolean(state.mutations[taskKey(id)])
+  }
+
+  function clearPreview(id) {
+    if (!previewOnly) return
+    const key = taskKey(id)
+    delete state.mutations[key]
+    const index = state.tasks.findIndex(task => taskKey(task.id) === key)
+    if (index < 0) return
+    if (state.savedTasks[key]) state.tasks[index] = cloneTask(state.savedTasks[key])
+    else state.tasks.splice(index, 1)
   }
 
   function discard() {
@@ -387,21 +422,23 @@ export function createTaskDraftStore(loader, saver = saveTaskMutations) {
   return {
     state: readonly(state),
     tasks: visibleTasks,
-    hasUnsaved,
+    hasUnsaved: previewOnly ? computed(() => false) : hasUnsaved,
+    hasPreviews: previewOnly ? hasUnsaved : computed(() => false),
     mutationList,
     load,
     addTask,
     updateTask,
     deleteTask,
-    isDirty,
+    isDirty: previewOnly ? () => false : isDirty,
+    clearPreview,
     discard,
-    save,
+    ...(previewOnly ? {} : { save }),
     reset,
     _hydrateForTest: hydrate,
   }
 }
 
-export const scheduleTaskStore = createTaskDraftStore(getTasks)
+export const scheduleTaskStore = createTaskDraftStore(getTasks, undefined, { previewOnly: true })
 export const myTaskStore = createTaskDraftStore(getMyTasks)
 
 export function hasAnyUnsavedTasks() {

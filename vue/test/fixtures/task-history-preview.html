@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>操作记录组件预览（模拟数据）</title></head>
+<body><div id="app"></div>
+<script type="module">
+import { createApp, h, ref } from 'vue'
+import { NConfigProvider, NMessageProvider, NCard, NAlert, zhCN } from 'naive-ui'
+import FilterPanel from '/src/components/FilterPanel.vue'
+import TaskHistoryCard from '/src/components/TaskHistoryCard.vue'
+import { antdLikeTheme } from '/src/theme.js'
+import '/src/style.css'
+
+// Standalone visual fixture: all history requests stay in memory.
+const before = { schema_version: 1, task: '每日销售额统计', start: '08:00:00', finish: '08:30:00', bot: '机器人 A', tags: ['每日'], note: '', owner_user_id: '7', schedule_uuid: 'preview-plan', bound: true, deleted: false }
+const after = { ...before, start: '07:30:00', finish: '08:00:00' }
+const records = [
+  { id: '10', task_id: '1', task_name: before.task, actor_user_id: '7', actor_name: '示例用户甲', action: 'update', before, after, snapshot_complete: true, annotation: '7:30 前没数据', annotation_version: 1, can_annotate: true, can_restore: true, created_at: '2026-10-20T05:00:00Z' },
+  { id: '9', task_id: '2', task_name: '库存数据同步', actor_user_id: '8', actor_name: '示例用户乙', action: 'rebind', before: { ...before, schedule_uuid: 'previous-plan' }, after: { ...before }, snapshot_complete: true, annotation: '', annotation_version: 0, can_annotate: false, can_restore: false, reverted: true, reverted_by_name: '示例用户乙', created_at: '2026-10-20T04:45:00Z' },
+]
+window.fetch = async (url, options = {}) => {
+  const path = new URL(url, location.origin).pathname
+  if (!path.startsWith('/api/task-history')) throw new Error('Preview only: unexpected request')
+  let data
+  if (path.endsWith('/annotation')) {
+    const input = JSON.parse(options.body)
+    records[0].annotation = input.annotation
+    records[0].annotation_version += 1
+    data = { annotation_version: records[0].annotation_version }
+  } else if (path.endsWith('/restore-preview')) {
+    data = { history_id: '10', task_id: '1', task_version: 4, current: after, target: before, changes: ['start', 'finish'], owners: { 7: '示例用户甲' } }
+  } else if (path.endsWith('/restore')) {
+    Object.assign(records[0], { reverted: true, reverted_by_name: '示例用户甲', can_restore: false })
+    data = { success: true }
+  } else {
+    const actor = new URL(url, location.origin).searchParams.get('actor_id')
+    const task = new URL(url, location.origin).searchParams.get('task_id')
+    data = { records: records.filter(row => (!actor || row.actor_user_id === actor) && (!task || row.task_id === task)), retained_count: 2, has_more: false, next_cursor: null }
+  }
+  return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
+}
+createApp({ setup() {
+  const refreshKey = ref(0)
+  const users = [{ id: '7', display_name: '示例用户甲' }, { id: '8', display_name: '示例用户乙' }]
+  const tasks = [{ id: '1', task: before.task }, { id: '2', task: '库存数据同步' }]
+  return () => h(NConfigProvider, { themeOverrides: antdLikeTheme, locale: zhCN }, { default: () =>
+    h(NMessageProvider, null, { default: () => h('main', { style: 'max-width:660px;margin:24px auto;padding:0 16px' }, [
+      h(NAlert, { type: 'info', style: 'margin-bottom:16px' }, { default: () => '组件样式与交互预览 · 模拟数据，不会写入数据库。实际页面中操作记录位于筛选卡片下方。' }),
+      h('div', { style: 'display:grid;grid-template-columns:repeat(2,minmax(0,304px));gap:20px;align-items:start' }, [
+        h(FilterPanel, { filteredCount: 2, totalCount: 2, allBots: ['机器人 A'], allOwners: users }),
+        h(TaskHistoryCard, { users, tasks, refreshKey: refreshKey.value, onRestored: () => refreshKey.value++ }),
+      ]),
+    ]) })
+  })
+} }).mount('#app')
+</script></body></html>

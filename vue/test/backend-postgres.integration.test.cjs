@@ -3,6 +3,8 @@ const { createPool } = require('../server/db/pool.cjs');
 const { initializeRepositories } = require('../server/db/index.cjs');
 const { createTaskMutationService } = require('../server/services/taskMutationService.cjs');
 const { createTaskActionService } = require('../server/services/taskActionService.cjs');
+const { createTaskHistoryService } = require('../server/services/taskHistoryService.cjs');
+const { createScheduleReconciliation } = require('../server/services/scheduleReconciliation.cjs');
 const { createApp } = require('../server/app.cjs');
 const { ConflictError, NotFoundError } = require('../server/errors.cjs');
 const { backfillLegacyTask } = require('../storage/backfillLegacyTask.cjs');
@@ -27,11 +29,12 @@ integration('PostgreSQL 真实事务与权限集成', () => {
           excludeTaskId: context.excludeTaskId || context.taskId,
         });
         if (binding) throw new ConflictError('SCHEDULE_ALREADY_BOUND', '该影刀计划已被其他任务绑定');
-        return { schedule: { scheduleUuid } };
+        return { schedule: { scheduleUuid, ...(scheduleUuid === 'schedule-shared' ? { executeScope: 'any', clientScope: 'assign', robotClientList: [{ uuid: 'machine-a', robotClientName: 'admin@tenant' }, { uuid: 'machine-b', robotClientName: 'bot_1@tenant' }] } : {}) } };
       },
       async list() {
         return { schedules: [], page: 1, size: 20, total: 0 };
       },
+      async getCron() { return { expression: '0 0-8/2 * * *', fetched_at: new Date().toISOString(), stale: false }; },
     };
     const yingdaoClient = {
       async startTask() {
@@ -45,6 +48,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
       trackExecution() { return Promise.resolve(); },
     };
     const services = {
+      taskHistory: createTaskHistoryService({ pool, historyRepository: repositories.taskHistory, scheduleDirectory }),
       taskMutation: createTaskMutationService({ pool, scheduleDirectory }),
       taskActions: createTaskActionService({
         pool,
@@ -68,7 +72,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
         sessionCookieName: 'pytaskgantt.test.sid',
         sessionTableName: 'app_sessions',
         secureCookies: false,
-        schemaVersion: 7,
+        schemaVersion: 12,
       },
       pool,
       repositories,
@@ -81,6 +85,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     executionCounter = 0;
     await pool.query(`
       TRUNCATE TABLE
+        rpa_plan_scan_snapshots,
         app_sessions,
         rpa_task_audit_log,
         rpa_task_run_requests,
@@ -122,6 +127,168 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     }).expect(200);
     return response.body.tasks[0];
   }
+
+  it('全员隐藏名单独立于排班权限，保留版本、绑定及普通编辑，并原子拒绝冲突', async () => {
+    const owner = await login(1), other = await login(2);
+    const task = await createTask(owner, 'schedule-visibility');
+    expect(task.is_hidden).toBe(false);
+    const change = { id: task.id, expected_hidden: false, is_hidden: true };
+    await other.patch('/api/tasks/visibility').send({ changes: [change] }).expect(200);
+    let row = await repositories.tasks.findById(task.id);
+    expect(row.isHidden).toBe(true);
+    expect(row.version).toBe(task.version);
+    expect(row.scheduleUuid).toBe(task.schedule_uuid);
+    const visible = await owner.get('/api/tasks').expect(200);
+    expect(visible.body.tasks.find(item => item.id === task.id).is_hidden).toBe(true);
+    await owner.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: task.id, version: task.version, changes: { task: '修改名称' } }] }).expect(200);
+    row = await repositories.tasks.findById(task.id);
+    expect(row.isHidden).toBe(true);
+    const second = await createTask(owner, 'schedule-visibility-second');
+    await owner.patch('/api/tasks/visibility').send({ changes: [{ id: second.id, expected_hidden: false, is_hidden: true }, change] }).expect(409);
+    expect((await repositories.tasks.findById(second.id)).isHidden).toBe(false);
+    const audits = await pool.query("SELECT new_value FROM rpa_task_audit_log WHERE task_id=$1 AND new_value->>'scope'='visibility'", [task.id]);
+    expect(audits.rows).toHaveLength(1);
+  });
+
+  it('待新增计划白名单无需任务ID，全员共享且只能由加入人或管理员恢复，混合批量恢复原子校验', async () => {
+    const agent = await login(1), task = await createTask(agent, 'schedule-existing-white');
+    const service = createScheduleReconciliation({ stateRepository: repositories.planReconciliation, tasksRepository: repositories.tasks,
+      taskMutationService: {}, client: { async getScheduleDetail(uuid) { return { schedule: { scheduleUuid: uuid, scheduleName: `计划${uuid}` }, cache: { stale: false } }; } } });
+    const actor = { userId: '1' }, other = { userId: '2' };
+    const planA = { task_id: null, schedule_uuid: 'schedule-unbound-a', field: 'plan' };
+    const planB = { task_id: null, schedule_uuid: 'schedule-unbound-b', field: 'plan' };
+    const attr = { task_id: task.id, schedule_uuid: 'schedule-existing-white', field: 'task' };
+    await service.changeRule(actor, planA);
+    const shared = await service.sharedState(other);
+    expect(shared.whitelist).toHaveLength(1);
+    expect(shared.whitelist[0]).toMatchObject({ task_id: null, schedule_uuid: planA.schedule_uuid, field: 'plan', can_edit: false });
+    await expect(service.changeRule(other, planA, true)).rejects.toMatchObject({ status: 403 });
+    await service.changeRule(other, planB);
+    await service.changeRule(actor, attr);
+    await expect(service.restoreRules(actor, [attr, planB])).rejects.toMatchObject({ status: 403 });
+    expect(await repositories.planReconciliation.listWhitelist()).toHaveLength(3);
+    await service.restoreRules(actor, [attr, planA]);
+    expect(await repositories.planReconciliation.listWhitelist()).toHaveLength(1);
+    await service.changeRule({ userId: '1', isAdmin: true }, planB, true);
+    expect(await repositories.planReconciliation.listWhitelist()).toHaveLength(0);
+    await expect(service.changeRule(actor, { ...planA, schedule_uuid: task.schedule_uuid })).rejects.toMatchObject({ code: 'SCHEDULE_ALREADY_BOUND' });
+  });
+
+  it('一键新增多个计划在同一事务创建，归当前用户、保留审计并持久化已处理标记', async () => {
+    const uuids = ['schedule-bulk-a', 'schedule-bulk-b'];
+    const client = {
+      async getScheduleInventory() { return uuids.map(schedule_uuid => ({ schedule_uuid, enabled: true })); },
+      async getScheduleDetail(uuid) { return { schedule: { scheduleUuid: uuid, scheduleName: `影刀${uuid}`, cronInterface: { type: 'day', hour: 23, minute: 59 }, executeScope: 'any', clientScope: 'assign', robotClientList: [{ uuid: 'a', robotClientName: 'A@tenant' }] }, cache: { fetchedAt: new Date().toISOString() } }; },
+      async listRecentTasks() { return []; },
+    };
+    const service = createScheduleReconciliation({ client, tasksRepository: repositories.tasks, stateRepository: repositories.planReconciliation,
+      taskMutationService: createTaskMutationService({ pool, scheduleDirectory: { async assertBindable(uuid) { return { schedule: { scheduleUuid: uuid } }; } } }) });
+    const actor = { userId: '1' }, id = (await service.start(actor)).id;
+    let state;
+    for (let i = 0; i < 60; i++) {
+      state = await service.sharedState(actor);
+      if (state.result?.id === id) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(state.result?.entries).toHaveLength(2);
+    const result = await service.apply(id, actor, { entry_ids: state.result.entries.map(entry => entry.id), bulk_create: true });
+    expect(result.affected_ids).toHaveLength(2);
+    expect(result.duration_fallback_count).toBe(2);
+    const { rows } = await pool.query('SELECT task, owner_user_id::text, start_time, finish_time, tags FROM rpa_tasks ORDER BY id');
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row.owner_user_id === '1' && row.start_time === '23:59:00' && row.finish_time === '00:00:00' && row.tags.includes('每日'))).toBe(true);
+    expect((await pool.query("SELECT count(*)::int AS count FROM rpa_task_audit_log WHERE action='create'")).rows[0].count).toBe(2);
+    expect((await repositories.planReconciliation.get(id)).entries.every(entry => entry.applied)).toBe(true);
+  });
+
+  it('共享白名单与快照持久化，重建服务无需重扫；同步与后台轮询均保留白名单属性', async () => {
+    const agent = await login(1), original = await createTask(agent, 'schedule-shared');
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { timing_mode: 'cron' } }] }).expect(200);
+    const before = await repositories.tasks.findById(original.id);
+    let inventoryReads = 0;
+    const client = {
+      async getScheduleInventory() { inventoryReads++; return [{ schedule_uuid: 'schedule-shared', enabled: true }]; },
+      async getScheduleDetail() { return { schedule: { scheduleUuid: 'schedule-shared', scheduleName: '影刀改名', cronInterface: { type: 'cron', cronExpress: '30 0-8/2 * * *' }, executeScope: 'any', clientScope: 'assign', robotClientList: [{ uuid: 'new-bot', robotClientName: 'B@tenant' }] }, cache: { fetchedAt: new Date().toISOString() } }; },
+    };
+    const actor = { userId: '1' }, other = { userId: '2' };
+    const options = { client, tasksRepository: repositories.tasks, stateRepository: repositories.planReconciliation, taskMutationService: createTaskMutationService({ pool, scheduleDirectory: {} }) };
+    const service = createScheduleReconciliation(options);
+    const scanId = (await service.start(actor)).id;
+    let state;
+    for (let i = 0; i < 60; i++) {
+      state = await service.sharedState(actor);
+      if (state.result?.id === scanId) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(state.result?.id).toBe(scanId);
+    for (const field of ['task', 'bot', 'schedule_cron_expression', 'schedule_dispatch']) await service.changeRule(actor, { task_id: original.id, schedule_uuid: 'schedule-shared', field });
+    const restarted = createScheduleReconciliation(options);
+    const shared = await restarted.sharedState(other);
+    expect(shared.result.id).toBe(scanId);
+    expect(shared.whitelist).toHaveLength(4);
+    expect(shared.result.entries[0].can_apply).toBe(false);
+    await expect(restarted.changeRule(other, { task_id: original.id, schedule_uuid: 'schedule-shared', field: 'task' }, true)).rejects.toMatchObject({ status: 403 });
+    await expect(restarted.apply(scanId, other, { entry_ids: [shared.result.entries[0].id] })).rejects.toMatchObject({ status: 403 });
+    await restarted.apply(scanId, actor, { entry_ids: [shared.result.entries[0].id] });
+    const after = await repositories.tasks.findById(original.id);
+    expect(after.timingMode).toBe('cron');
+    expect(after.task).toBe(before.task);
+    expect(after.bot).toBe(before.bot);
+    expect(after.scheduleCronExpression).toBe(before.scheduleCronExpression);
+    expect(after.scheduleDispatch).toEqual(before.scheduleDispatch);
+    expect(inventoryReads).toBe(2);
+    const attempt = await repositories.tasks.beginSyncAttempt({ taskId: after.id, scheduleUuid: after.scheduleUuid, scheduleBoundAt: after.scheduleBoundAt });
+    expect(await repositories.tasks.updateScheduleCron(attempt, { expression: '* * * * *' })).toBeNull();
+    expect(await repositories.tasks.updateScheduleDispatch(attempt, { dispatch: {} })).toBeNull();
+    await restarted.changeRule(actor, { task_id: original.id, schedule_uuid: 'schedule-shared', field: 'schedule_cron_expression' }, true);
+    expect(await repositories.tasks.updateScheduleCron(attempt, { expression: '* * * * *' })).not.toBeNull();
+    expect((await repositories.planReconciliation.get(scanId)).entries[0].applied).toBe(true);
+    const otherAgent = await login(2), otherTask = await createTask(otherAgent, 'schedule-other-whitelist');
+    const ownRule = { task_id: original.id, schedule_uuid: 'schedule-shared', field: 'task' };
+    const otherRule = { task_id: otherTask.id, schedule_uuid: 'schedule-other-whitelist', field: 'task' };
+    await restarted.changeRule(other, otherRule);
+    await expect(restarted.restoreRules(actor, [ownRule, otherRule])).rejects.toMatchObject({ status: 403 });
+    expect((await repositories.planReconciliation.listWhitelist()).filter(rule => rule.field === 'task')).toHaveLength(2);
+    await restarted.restoreRules(actor, [ownRule, { ...ownRule, field: 'bot' }]);
+    const remaining = await repositories.planReconciliation.listWhitelist();
+    expect(remaining.filter(rule => rule.task_id === original.id).map(rule => rule.field)).toEqual(['schedule_dispatch']);
+    expect(remaining.some(rule => rule.task_id === otherTask.id && rule.field === 'task')).toBe(true);
+  });
+
+  it('计划配置同步保留所有者备注标签，更新机器与Cron并阻止旧同步回写，失败批次完整回滚', async () => {
+    const agent = await login('1');
+    const first = await createTask(agent, 'schedule-sync-a');
+    const second = await createTask(agent, 'schedule-sync-b');
+    const mutation = createTaskMutationService({ pool, scheduleDirectory: {} });
+    const actor = { userId: '2', isAdmin: true };
+    const metadata = { schedule_uuid: 'schedule-sync-a', expression: '0 0-8/2 * * *', fetched_at: new Date().toISOString(),
+      dispatch: { execute_scope: 'any', client_scope: 'assign', clients: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] } };
+    const before = (await pool.query('SELECT * FROM rpa_tasks WHERE id = $1', [first.id])).rows[0];
+    await mutation.applyBatch(actor, { mutations: [{ type: 'update', id: first.id, version: first.version,
+      changes: { task: '同步后的名称', start: '23:55:00', finish: '00:55:00', timing_mode: 'cron' } }] }, { syncPlans: new Map([[first.id, metadata]]) });
+    const after = (await pool.query('SELECT * FROM rpa_tasks WHERE id = $1', [first.id])).rows[0];
+    expect(after.owner_user_id).toBe(before.owner_user_id);
+    expect(after.tags).toEqual(before.tags);
+    expect(after.note).toBe(before.note);
+    expect(after.expected_duration_seconds).toBe(before.expected_duration_seconds);
+    expect(after.version).toBe(before.version + 1);
+    expect(Number(after.sync_generation)).toBe(Number(before.sync_generation) + 1);
+    expect(after.schedule_dispatch).toEqual(metadata.dispatch);
+    expect(after.schedule_cron_expression).toBe(metadata.expression);
+    const audit = (await pool.query("SELECT * FROM rpa_task_audit_log WHERE task_id = $1 ORDER BY id DESC LIMIT 1", [first.id])).rows[0];
+    expect(String(audit.actor_user_id)).toBe('2');
+    expect(audit.new_value).toMatchObject({ admin_override: true, plan_sync: true });
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM rpa_task_operation_history WHERE task_id=$1', [first.id])).rows[0].count).toBe(2);
+    await expect(mutation.applyBatch(actor, { mutations: [
+      { type: 'update', id: first.id, version: after.version, changes: { task: '应回滚' } },
+      { type: 'delete', id: second.id, version: 999 },
+    ] }, { syncPlans: new Map([[first.id, metadata]]) })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    const rolledBack = (await pool.query('SELECT * FROM rpa_tasks WHERE id=$1', [first.id])).rows[0];
+    expect(rolledBack.task).toBe('同步后的名称');
+    expect(rolledBack.version).toBe(after.version);
+    expect(rolledBack.sync_generation).toBe(after.sync_generation);
+    expect((await pool.query('SELECT deleted_at FROM rpa_tasks WHERE id=$1', [second.id])).rows[0].deleted_at).toBeNull();
+  });
 
   it('会话、唯一绑定、越权与整批回滚均由后端和数据库保证', async () => {
     await request(app).get('/api/tasks').expect(401);
@@ -781,6 +948,105 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     expect(saved.jobUuidList).toEqual(['job-kept']);
     expect(saved.clients).toEqual([{ robotClientUuid: 'client-kept', robotClientName: '客户端 A' }]);
     expect(saved.normalizedStatus).toBe('运行成功');
+  });
+
+  it('历史卡片可备注并将较早记录完整还原，重复还原被拒绝', async () => {
+    const userA = await login(1);
+    const userB = await login(2);
+    const original = await createTask(userA, 'schedule-history');
+    const update = await userA.post('/api/tasks/batch').send({ mutations: [{
+      type: 'update', id: original.id, version: original.version,
+      changes: { start: '23:30:00', finish: '01:15:00', note: '后来的备注' },
+    }] }).expect(200);
+    const version = update.body.tasks[0].version;
+    const records = await userA.get(`/api/task-history?task_id=${original.id}`).expect(200);
+    const entry = records.body.records.find(row => row.action === 'update');
+    expect(entry.before.note).toBe(original.note);
+    expect(entry.after.start).toBe('23:30:00');
+    await userB.patch(`/api/task-history/${entry.id}/annotation`).send({ annotation: '非法备注', version: 0 }).expect(403);
+    await userA.patch(`/api/task-history/${entry.id}/annotation`).send({ annotation: '7:30 前没数据', version: 0 }).expect(200);
+    await userA.post(`/api/tasks/${original.id}/transfer`).send({ target_user_id: '2', version }).expect(200);
+    await userA.get(`/api/task-history/${entry.id}/restore-preview`).expect(403);
+    const preview = await userB.get(`/api/task-history/${entry.id}/restore-preview`).expect(200);
+    expect(preview.body.target.owner_user_id).toBe('1');
+    await userB.post(`/api/task-history/${entry.id}/restore`).send({ version: preview.body.task_version }).expect(200);
+    const restored = (await userA.get('/api/tasks').expect(200)).body.tasks.find(row => row.id === original.id);
+    expect(restored).toMatchObject({ owner_user_id: '1', start: original.start, finish: original.finish, note: original.note });
+    await userA.post(`/api/task-history/${entry.id}/restore`).send({ version: restored.version }).expect(409);
+  });
+
+  it('历史保留按任务独立截断 50 条，备注不增条数且原始审计保留', async () => {
+    const agent = await login(1);
+    const task = await createTask(agent, 'schedule-history-cap');
+    const other = await createTask(agent, 'schedule-history-other');
+    let version = task.version;
+    for (let i = 0; i < 52; i += 1) {
+      const result = await agent.post('/api/tasks/batch').send({ mutations: [{
+        type: 'update', id: task.id, version, changes: { note: `历史 ${i}` },
+      }] }).expect(200);
+      version = result.body.tasks[0].version;
+    }
+    const counts = await pool.query('SELECT task_id::text, COUNT(*)::integer AS count FROM rpa_task_operation_history GROUP BY task_id');
+    expect(counts.rows.find(row => row.task_id === task.id).count).toBe(50);
+    expect(counts.rows.find(row => row.task_id === other.id).count).toBe(1);
+    const audits = await pool.query('SELECT COUNT(*)::integer AS count FROM rpa_task_audit_log WHERE task_id = $1', [task.id]);
+    expect(audits.rows[0].count).toBe(53);
+    const page = await agent.get(`/api/task-history?task_id=${task.id}&limit=5`).expect(200);
+    expect(page.body.records).toHaveLength(5);
+    expect(page.body.has_more).toBe(true);
+    const next = await agent.get(`/api/task-history?task_id=${task.id}&limit=5&before_id=${page.body.next_cursor}`).expect(200);
+    expect(next.body.records.some(row => page.body.records.some(previous => previous.id === row.id))).toBe(false);
+  });
+
+  it('循环模式保存、权限、历史还原、旧绑定回写保护及导入导出', async () => {
+    const agent = await login(1);
+    const other = await login(2);
+    const original = await createTask(agent, 'schedule-cron');
+    await other.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { timing_mode: 'cron' } }] }).expect(403);
+    const result = await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { timing_mode: 'cron', expected_duration_seconds: 60 } }] }).expect(200);
+    const recurring = result.body.tasks[0];
+    expect(recurring).toMatchObject({ timing_mode: 'cron', expected_duration_seconds: 60, schedule_cron_expression: '0 0-8/2 * * *' });
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: recurring.version, changes: { schedule_cron_expression: '* * * * *' } }] }).expect(400);
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: recurring.version, changes: { expected_duration_seconds: 0 } }] }).expect(400);
+    const record = (await agent.get(`/api/task-history?task_id=${original.id}`).expect(200)).body.records.find(row => row.action === 'update');
+    expect(record.after).toMatchObject({ timing_mode: 'cron', expected_duration_seconds: 60 });
+    await agent.post(`/api/task-history/${record.id}/restore`).send({ version: recurring.version }).expect(200);
+    const restored = (await agent.get('/api/tasks').expect(200)).body.tasks[0];
+    expect(restored.timing_mode).toBe('single');
+    const imported = await agent.post('/api/import').send({ format: 'json', content: JSON.stringify([{ Task: '循环导入', Start: '23:59:00', Finish: '00:01:00', Bot: 'A', ScheduleUuid: 'schedule-cron-import', TimingMode: 'cron', ExpectedDurationSeconds: 120 }]) }).expect(200);
+    expect(imported.body.inserted).toBe(1);
+    const exported = await agent.get('/api/export/json').expect(200);
+    expect(exported.body.find(row => row.Task === '循环导入')).toMatchObject({ TimingMode: 'cron', ExpectedDurationSeconds: 120 });
+    const row = (await repositories.tasks.listBoundTasks()).find(task => task.task === '循环导入');
+    const oldAttempt = await repositories.tasks.beginSyncAttempt({ taskId: row.id, scheduleUuid: row.scheduleUuid, scheduleBoundAt: row.scheduleBoundAt });
+    const freshAttempt = await repositories.tasks.beginSyncAttempt(oldAttempt);
+    expect(await repositories.tasks.updateScheduleCron(oldAttempt, { expression: '* * * * *' })).toBeNull();
+    await repositories.tasks.updateScheduleCron(freshAttempt, { error: '暂时不可用' });
+    expect((await repositories.tasks.findById(row.id)).scheduleCronExpression).toBe('0 0-8/2 * * *');
+    await agent.post(`/api/tasks/${row.id}/rebind`).send({ schedule_uuid: 'schedule-cron-new', version: row.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleCronExpression).toBeNull();
+    expect(await repositories.tasks.updateScheduleCron(freshAttempt, { expression: '* * * * *' })).toBeNull();
+  });
+
+  it('共享机器元数据取自上游，旧同步不覆盖新同步，失败保留缓存，换绑清空缓存', async () => {
+    const agent = await login(1);
+    const original = await createTask(agent, 'schedule-shared');
+    expect(original.schedule_dispatch).toMatchObject({ execute_scope: 'any', clients: [{ id: 'machine-a' }, { id: 'machine-b' }] });
+    await agent.post('/api/tasks/batch').send({ mutations: [{ type: 'update', id: original.id, version: original.version, changes: { schedule_dispatch: {} } }] }).expect(400);
+    const row = await repositories.tasks.findById(original.id);
+    const oldAttempt = await repositories.tasks.beginSyncAttempt({ taskId: row.id, scheduleUuid: row.scheduleUuid, scheduleBoundAt: row.scheduleBoundAt });
+    const fresh = await repositories.tasks.beginSyncAttempt(oldAttempt);
+    expect(await repositories.tasks.updateScheduleDispatch(oldAttempt, { dispatch: {} })).toBeNull();
+    await repositories.tasks.updateScheduleDispatch(fresh, { error: 'temporary unavailable' });
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch.clients).toHaveLength(2);
+    await agent.post(`/api/tasks/${row.id}/rebind`).send({ schedule_uuid: 'schedule-shared-new', version: row.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch).toEqual({});
+    expect(await repositories.tasks.updateScheduleDispatch(fresh, { dispatch: original.schedule_dispatch })).toBeNull();
+    const history = (await agent.get(`/api/task-history?task_id=${row.id}`).expect(200)).body.records;
+    const binding = history.find(record => record.action === 'rebind');
+    const current = await repositories.tasks.findById(row.id);
+    await agent.post(`/api/task-history/${binding.id}/restore`).send({ version: current.version }).expect(200);
+    expect((await repositories.tasks.findById(row.id)).scheduleDispatch).toEqual({});
   });
 
   it('执行记录过期清理不会删除或破坏已完成的立即执行请求关联', async () => {

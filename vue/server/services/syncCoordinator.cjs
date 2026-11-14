@@ -308,6 +308,32 @@ class SyncCoordinator {
     });
   }
 
+  async _syncCron(task, attempt) {
+    const syncDispatch = typeof this.tasksRepository.updateScheduleDispatch === 'function';
+    const syncCron = task.timingMode === 'cron' && typeof this.tasksRepository.updateScheduleCron === 'function';
+    if (!attempt || (!syncCron && !syncDispatch)) return;
+    let result;
+    try {
+      result = await this.client.getScheduleDetail(attempt.scheduleUuid);
+      if (result.cache?.stale) throw new Error('影刀暂不可用，沿用上次有效规则');
+    } catch (error) {
+      const message = String(this._sanitizeUpstream(error.message || error));
+      if (syncDispatch) await this.tasksRepository.updateScheduleDispatch(attempt, { error: message });
+      if (syncCron) await this.tasksRepository.updateScheduleCron(attempt, { error: message });
+      return;
+    }
+    if (syncDispatch) {
+      const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
+      await this.tasksRepository.updateScheduleDispatch(attempt, { dispatch: normalizeScheduleDispatch(result.schedule), syncedAt: result.cache?.fetchedAt || this._nowIso() });
+    }
+    if (syncCron) {
+      try {
+        const { scheduleCronExpression } = require('../../shared/yingdaoCron.mjs');
+        await this.tasksRepository.updateScheduleCron(attempt, { expression: scheduleCronExpression(result.schedule?.cronInterface), syncedAt: result.cache?.fetchedAt || this._nowIso() });
+      } catch (error) { await this.tasksRepository.updateScheduleCron(attempt, { error: String(this._sanitizeUpstream(error.message || error)) }); }
+    }
+  }
+
   async _markAttemptsFailed(attempts, error) {
     const message = String(error && error.message ? error.message : error || '同步失败');
     await Promise.allSettled(attempts.map(attempt => this._updateSyncState(attempt, {
@@ -419,6 +445,7 @@ class SyncCoordinator {
     try {
       tasks = await this._listBoundTasks();
       attempts = (await Promise.all(tasks.map(task => this._beginSyncAttempt(task)))).filter(Boolean);
+      await Promise.all(tasks.map(task => this._syncCron(task, attempts.find(attempt => String(attempt.taskId) === String(task.id)))));
       const end = this._nowDate();
       const start = new Date(end.getTime() - this.incrementalLookbackDays * 24 * 60 * 60 * 1000);
       const records = await this.client.fetchNewestTasks({
@@ -504,6 +531,7 @@ class SyncCoordinator {
       const end = this._nowDate();
       const start = new Date(end.getTime() - this.historyDays * 24 * 60 * 60 * 1000);
       attemptedRemoteSync = true;
+      await this._syncCron(task, attempt);
       const records = await this.client.listTaskHistory(attempt.scheduleUuid, {
         startTime: yingdaoTimestamp(start),
         endTime: yingdaoTimestamp(end),
@@ -547,6 +575,7 @@ class SyncCoordinator {
           attempt = await this._beginSyncAttempt(task);
           if (!attempt) continue;
           attemptedRemoteSync = true;
+          await this._syncCron(task, attempt);
           const records = await this.client.listTaskHistory(attempt.scheduleUuid, {
             startTime: yingdaoTimestamp(start),
             endTime: yingdaoTimestamp(end),

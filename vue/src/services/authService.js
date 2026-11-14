@@ -1,4 +1,6 @@
 import { reactive, readonly } from 'vue'
+import { renewDisplayPreferences } from './browserPreferences.js'
+import { planSyncStore } from '../stores/planSyncStore.js'
 import { ApiError, apiRequest, getApiUrl, toQuery } from './apiClient.js'
 
 const authState = reactive({
@@ -16,6 +18,7 @@ let sessionPromise = null
 function applySession(payload = {}) {
   authState.authenticated = Boolean(payload.authenticated && payload.user)
   authState.user = authState.authenticated ? payload.user : null
+  if (authState.authenticated) renewDisplayPreferences()
   authState.authMode = payload.auth_mode || authState.authMode || 'dev'
   authState.feishuEnabled = Boolean(payload.feishu_enabled)
   const refreshSeconds = Number(payload.ui_refresh_seconds)
@@ -72,6 +75,7 @@ export async function logout() {
 }
 
 export function clearSession() {
+  planSyncStore.connectUser(null)
   authState.authenticated = false
   authState.user = null
   authState.initialized = true

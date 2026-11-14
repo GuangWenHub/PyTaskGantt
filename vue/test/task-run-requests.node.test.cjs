@@ -72,6 +72,7 @@ function createHarness({
           }
 
           const transactionState = selectedState(client);
+          if (text.includes('public.rpa_task_operation_history') || text.startsWith('SELECT id FROM public.rpa_tasks')) return { rows: [] };
           if (text.includes('FROM rpa_tasks AS task') && text.includes('requester.is_admin AS requester_is_admin')) {
             const task = transactionState.task;
             return {

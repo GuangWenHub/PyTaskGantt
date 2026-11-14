@@ -59,11 +59,25 @@ async function readSyncCutoff(tasksRepository) {
   return presentSyncCutoff(await tasksRepository.getSyncCutoff());
 }
 
-function createTasksRouter({ usersRepository, tasksRepository, taskMutationService, taskActionService, syncCoordinator }) {
+function createTasksRouter({ usersRepository, tasksRepository, taskMutationService, taskActionService, syncCoordinator, todayExecutions }) {
   const router = express.Router();
 
   router.get('/users', asyncHandler(async (_req, res) => {
     res.json({ users: (await usersRepository.listActive()).map(presentUser) });
+  }));
+
+  if (todayExecutions) router.get('/tasks/today-executions', asyncHandler(async (req, res) => {
+    if (typeof req.query.task_ids !== 'string') throw new ValidationError('请指定任务ID');
+    const ids = req.query.task_ids ? req.query.task_ids.split(',').map(parseTaskId) : [];
+    if (ids.length > 500 || new Set(ids).size !== ids.length) throw new ValidationError('最多查询500个不重复的任务');
+    const mode = req.query.refresh;
+    if (mode != null && !['cache', 'due', 'force'].includes(mode)) throw new ValidationError('运行记录刷新方式不正确');
+    const selected = req.query.refresh_ids;
+    if (selected != null && typeof selected !== 'string') throw new ValidationError('核对任务ID不正确');
+    const refreshIds = selected == null ? ids : selected ? selected.split(',').map(parseTaskId) : [];
+    if (new Set(refreshIds).size !== refreshIds.length || refreshIds.some(id => !ids.includes(id))) throw new ValidationError('核对任务必须属于本次查询范围');
+    res.json(await (mode == null && selected == null ? todayExecutions.read(req.actor, ids) : todayExecutions.read(req.actor, ids, { refresh: mode || 'due', refreshIds })));
+
   }));
 
   router.get('/tasks', asyncHandler(async (req, res) => {
@@ -98,6 +112,18 @@ function createTasksRouter({ usersRepository, tasksRepository, taskMutationServi
       sync_cutoff: syncCutoff,
       server_time: new Date().toISOString(),
     });
+  }));
+
+  // Shared display settings: any authenticated user can manage the common list.
+  // This endpoint cannot change schedule/configuration fields or execute tasks.
+  router.patch('/tasks/visibility', asyncHandler(async (req, res) => {
+    const input = parseBody(z.object({ changes: z.array(z.object({
+      id: z.string().transform(value => parseTaskId(value)),
+      is_hidden: z.boolean(), expected_hidden: z.boolean(),
+    }).strict()).min(1).max(500) }).strict(), req.body);
+    if (new Set(input.changes.map(change => change.id)).size !== input.changes.length) throw new ValidationError('任务不能重复');
+    const tasks = await tasksRepository.setVisibility(req.actor, input.changes);
+    res.json({ tasks: tasks.map(presentTask), server_time: new Date().toISOString() });
   }));
 
   router.post('/tasks/batch', asyncHandler(async (req, res) => {

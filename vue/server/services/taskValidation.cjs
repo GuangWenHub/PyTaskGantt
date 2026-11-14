@@ -15,6 +15,13 @@ const timeSchema = z.string().trim().regex(timePattern).transform(normalizeTime)
 const botSchema = z.string().trim().min(1).max(100);
 const tagsSchema = z.array(z.string().max(50)).max(20).transform(normalizeTags);
 const noteSchema = z.string().max(2000);
+
+function parseSyncCreateForm(body) {
+  const parsed = z.object({ task: nameSchema, tags: tagsSchema.optional().default([]), note: noteSchema.optional().default(''),
+    expected_duration_seconds: z.number().int().min(1).max(86400) }).strict().safeParse(body);
+  if (!parsed.success) throw new ValidationError('请填写有效的名称和耗时', parsed.error.flatten());
+  return parsed.data;
+}
 const MAX_BIGINT = 9223372036854775807n;
 
 function isValidBigintId(value) {
@@ -42,6 +49,8 @@ const createMutation = z.object({
   bot: botSchema,
   tags: tagsSchema.optional().default([]),
   note: noteSchema.optional().default(''),
+  timing_mode: z.enum(['single', 'cron']).optional().default('single'),
+  expected_duration_seconds: z.number().int().min(1).max(86400).optional().default(60),
 }).strict();
 
 const changesSchema = z.object({
@@ -51,6 +60,8 @@ const changesSchema = z.object({
   bot: botSchema.optional(),
   tags: tagsSchema.optional(),
   note: noteSchema.optional(),
+  timing_mode: z.enum(['single', 'cron']).optional(),
+  expected_duration_seconds: z.number().int().min(1).max(86400).optional(),
 }).strict().refine(value => Object.keys(value).length > 0, '至少需要一个修改字段');
 
 const updateMutation = z.object({
@@ -83,4 +94,4 @@ function parseBatch(body) {
   return parsed.data;
 }
 
-module.exports = { parseBatch, normalizeTime, isValidBigintId };
+module.exports = { parseBatch, normalizeTime, isValidBigintId, parseSyncCreateForm };

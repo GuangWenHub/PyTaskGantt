@@ -7,6 +7,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const pageState = vi.hoisted(() => ({
   auth: { user: { id: '7', display_name: '管理员', is_admin: true }, uiRefreshSeconds: 60 },
   load: vi.fn(async () => []),
+  preview: false,
+  success: vi.fn(),
+  info: vi.fn(),
+  addTask: vi.fn(),
+  saveTaskMutations: vi.fn(),
   recoverTask: vi.fn(async () => ({ success: true })),
   slotStub: { template: '<div><slot /></div>' },
   task: {
@@ -29,6 +34,7 @@ const pageState = vi.hoisted(() => ({
 vi.mock('../src/services/authService.js', () => ({ auth: pageState.auth }))
 vi.mock('../src/services/taskService.js', () => ({
   exportTasks: vi.fn(),
+  saveTaskMutations: pageState.saveTaskMutations,
   getUsers: vi.fn(async () => [{ id: '8', display_name: '目标用户' }]),
   importTasks: vi.fn(),
   rebindTask: vi.fn(),
@@ -38,14 +44,17 @@ vi.mock('../src/services/taskService.js', () => ({
   transferTask: vi.fn(),
 }))
 vi.mock('../src/stores/taskDraftStore.js', () => ({
+  myTaskStore: { isDirty: () => false, state: { loaded: false } },
+  hasAnyTaskSaveInProgress: () => false,
   scheduleTaskStore: {
     state: { loading: false, saving: false, error: '' },
     tasks: { value: [pageState.task] },
     hasUnsaved: { value: false },
+    hasPreviews: { get value() { return pageState.preview } },
     mutationList: { value: [] },
     load: pageState.load,
     save: vi.fn(),
-    addTask: vi.fn(),
+    addTask: pageState.addTask,
     updateTask: vi.fn(),
     deleteTask: vi.fn(),
     isDirty: vi.fn(() => false),
@@ -58,6 +67,9 @@ vi.mock('../src/components/AppShell.vue', () => ({
 vi.mock('../src/components/ExecutionHistoryDialog.vue', () => ({
   default: { name: 'ExecutionHistoryDialog', template: '<div />' },
 }))
+vi.mock('../src/components/TaskHistoryCard.vue', () => ({
+  default: { name: 'TaskHistoryCard', template: '<div />' },
+}))
 vi.mock('../src/components/FilterPanel.vue', () => ({
   default: { name: 'FilterPanel', template: '<div />' },
 }))
@@ -65,7 +77,7 @@ vi.mock('../src/components/GanttChart.vue', () => ({
   default: { name: 'GanttChart', template: '<div />' },
 }))
 vi.mock('../src/components/TaskEditor.vue', () => ({
-  default: { name: 'TaskEditor', template: '<div />' },
+  default: { name: 'TaskEditor', props: ['show', 'saving', 'mode'], template: '<div />' },
 }))
 vi.mock('../src/components/TaskList.vue', () => ({
   default: {
@@ -105,16 +117,110 @@ vi.mock('naive-ui', () => ({
   NSpin: pageState.slotStub,
   NTag: pageState.slotStub,
   useDialog: () => ({ warning: vi.fn() }),
-  useMessage: () => ({ error: vi.fn(), info: vi.fn(), success: vi.fn(), warning: vi.fn() }),
+  useMessage: () => ({ error: vi.fn(), info: pageState.info, success: pageState.success, warning: vi.fn() }),
 }))
 
 import SchedulePage from '../src/pages/SchedulePage.vue'
 
 describe('SchedulePage administrator recovery', () => {
+  it('编辑本地保存只提交当前任务差异与原版本，不夹带其他预览或缓存字段', async () => {
+    const original = { ...pageState.task }
+    Object.assign(pageState.task, { can_edit: true, schedule_uuid: 'bound-plan', timing_mode: 'single', expected_duration_seconds: 60, schedule_dispatch: {}, schedule_cron_expression: '' })
+    const wrapper = mount(SchedulePage)
+    try {
+      await flushPromises()
+      wrapper.findComponent({ name: 'TaskList' }).vm.$emit('edit', pageState.task)
+      await nextTick()
+      const editor = wrapper.findComponent({ name: 'TaskEditor' })
+      pageState.saveTaskMutations.mockResolvedValue({ tasks: [], id_map: {} })
+      editor.vm.$emit('save-local', { ...pageState.task, task: '保存后的名称', note: '本地备注', _local_preview_fields: { cron: false, dispatch: false } })
+      await flushPromises()
+      expect(pageState.saveTaskMutations).toHaveBeenCalledWith([{ type: 'update', id: '10', version: 3, changes: { task: '保存后的名称', note: '本地备注' } }])
+      expect(editor.props('show')).toBe(false)
+      expect(pageState.success).toHaveBeenCalledWith('任务已保存到本地数据库，刷新后仍会保留')
+      expect(pageState.info).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); Object.keys(pageState.task).forEach(key => delete pageState.task[key]); Object.assign(pageState.task, original) }
+  })
+  it('编辑的循环规则或多机策略仅支持预览时拒绝部分保存，保持弹窗', async () => {
+    const original = { ...pageState.task }
+    Object.assign(pageState.task, { can_edit: true, schedule_uuid: 'bound-plan', schedule_cron_expression: '*/10 * * * *', schedule_dispatch: { execute_scope: 'any', clients: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] } })
+    const wrapper = mount(SchedulePage)
+    try {
+      await flushPromises()
+      wrapper.findComponent({ name: 'TaskList' }).vm.$emit('edit', pageState.task)
+      await nextTick()
+      const editor = wrapper.findComponent({ name: 'TaskEditor' })
+      editor.vm.$emit('save-local', { ...pageState.task, task: '名称', schedule_cron_expression: '*/5 * * * *', _local_preview_fields: { cron: true } })
+      await flushPromises()
+      expect(pageState.saveTaskMutations).not.toHaveBeenCalled()
+      expect(editor.props('show')).toBe(true)
+      editor.vm.$emit('save-local', { ...pageState.task, task: '名称', schedule_dispatch: { clients: [{ id: 'a', name: 'A' }] }, _local_preview_fields: { dispatch: true } })
+      await flushPromises()
+      expect(pageState.saveTaskMutations).not.toHaveBeenCalled()
+      expect(editor.props('show')).toBe(true)
+    } finally { wrapper.unmount(); Object.keys(pageState.task).forEach(key => delete pageState.task[key]); Object.assign(pageState.task, original) }
+  })
+
+  it('未绑定新增仅加入预览；保存本地必须带绑定且只提交单条新增，不保存其他草稿', async () => {
+    const wrapper = mount(SchedulePage)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FilterPanel' }).vm.$emit('create')
+    await nextTick()
+    const form = { task: '手工任务', start: '23:50:00', finish: '00:20:00', bot: 'A', tags: ['测试'], note: '', timing_mode: 'single', expected_duration_seconds: 1800, schedule_uuid: '' }
+    const editor = wrapper.findComponent({ name: 'TaskEditor' })
+    editor.vm.$emit('save-local', form)
+    await flushPromises()
+    expect(pageState.saveTaskMutations).not.toHaveBeenCalled()
+    editor.vm.$emit('submit', form)
+    await flushPromises()
+    expect(pageState.addTask).toHaveBeenCalledWith(form)
+    expect(pageState.saveTaskMutations).not.toHaveBeenCalled()
+    wrapper.findComponent({ name: 'FilterPanel' }).vm.$emit('create')
+    await nextTick()
+    pageState.info.mockClear()
+    pageState.saveTaskMutations.mockResolvedValue({ id_map: { local: '123' } })
+    editor.vm.$emit('save-local', { ...form, schedule_uuid: 'valid-plan', schedule_dispatch: { clients: [] }, schedule_cron_expression: 'client-cache' })
+    await flushPromises()
+    const mutations = pageState.saveTaskMutations.mock.calls[0][0]
+    expect(mutations).toHaveLength(1)
+    expect(mutations[0]).toMatchObject({ type: 'create', schedule_uuid: 'valid-plan', task: '手工任务' })
+    expect(mutations[0]).not.toHaveProperty('schedule_dispatch')
+    expect(mutations[0]).not.toHaveProperty('schedule_cron_expression')
+    expect(pageState.success).toHaveBeenCalledWith('任务已保存到本地数据库，刷新后仍会保留')
+    expect(pageState.info).not.toHaveBeenCalled()
+    expect(editor.props('show')).toBe(false)
+    wrapper.unmount()
+  })
+  it('保存过程中防止重复提交，失败保留弹窗和输入', async () => {
+    const wrapper = mount(SchedulePage)
+    await flushPromises()
+    wrapper.findComponent({ name: 'FilterPanel' }).vm.$emit('create')
+    await nextTick()
+    let reject
+    pageState.saveTaskMutations.mockReturnValue(new Promise((_, fail) => { reject = fail }))
+    const editor = wrapper.findComponent({ name: 'TaskEditor' })
+    const form = { task: '新任务', schedule_uuid: 'valid-plan' }
+    editor.vm.$emit('save-local', form)
+    editor.vm.$emit('save-local', form)
+    await nextTick()
+    expect(pageState.saveTaskMutations).toHaveBeenCalledTimes(1)
+    expect(editor.props('saving')).toBe(true)
+    reject(new Error('绑定已占用'))
+    await flushPromises()
+    expect(editor.props('show')).toBe(true)
+    expect(editor.props('saving')).toBe(false)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     pageState.auth.user.is_admin = true
     pageState.recoverTask.mockClear()
     pageState.load.mockClear()
+    pageState.preview = false
+    pageState.success.mockClear()
+    pageState.info.mockClear()
+    pageState.addTask.mockClear()
+    pageState.saveTaskMutations.mockReset()
   })
 
   it('管理员看到恢复入口并提交目标用户、计划和乐观锁版本', async () => {
@@ -122,7 +228,8 @@ describe('SchedulePage administrator recovery', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('全员任务沙盘')
     expect(wrapper.text()).not.toContain('所有登录用户均可查看')
-    expect(wrapper.text()).toContain('影刀数据截至 无已绑定任务')
+    expect(wrapper.get('header .header-run-status').text()).toBe('暂无有效计划配置缓存')
+    expect(wrapper.text()).not.toContain('影刀数据截至')
     expect(wrapper.findComponent({ name: 'TaskList' }).props('canRecover')).toBe(true)
 
     await wrapper.get('.recover-entry').trigger('click')
@@ -146,5 +253,26 @@ describe('SchedulePage administrator recovery', () => {
     expect(wrapper.findComponent({ name: 'TaskList' }).props('canRecover')).toBe(false)
     expect(wrapper.find('.recover-entry').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('仅有预览或表单调整时阻止直接刷新，卸载后移除刷新监听', async () => {
+    const wrapper = mount(SchedulePage)
+    await flushPromises()
+    const clean = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(clean)
+    expect(clean.defaultPrevented).toBe(false)
+    pageState.preview = true
+    const preview = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(preview)
+    expect(preview.defaultPrevented).toBe(true)
+    pageState.preview = false
+    wrapper.findComponent({ name: 'TaskEditor' }).vm.$emit('preview-change')
+    const editing = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(editing)
+    expect(editing.defaultPrevented).toBe(true)
+    wrapper.unmount()
+    const after = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(after)
+    expect(after.defaultPrevented).toBe(false)
   })
 })
