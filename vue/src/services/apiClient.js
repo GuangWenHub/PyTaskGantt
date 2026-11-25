@@ -106,10 +106,15 @@ export function toQuery(params = {}) {
   return text ? `?${text}` : ''
 }
 
-export async function downloadFromApi(path, filename) {
+export async function downloadFromApi(path, filename, { body } = {}) {
   let response
   try {
-    response = await fetch(joinPath(path), { credentials: 'include', cache: 'no-store' })
+    response = await fetch(joinPath(path), {
+      credentials: 'include', cache: 'no-store',
+      ...(body === undefined ? {} : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }),
+    })
   } catch (error) {
     throw new ApiError(error?.message || '下载失败', { code: 'NETWORK_ERROR' })
   }

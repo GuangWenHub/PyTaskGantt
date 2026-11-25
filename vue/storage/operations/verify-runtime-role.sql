@@ -77,9 +77,12 @@ WITH expected(table_name, privilege) AS (
     ('rpa_task_executions', 'UPDATE'),
     ('rpa_task_executions', 'DELETE'),
     ('rpa_task_audit_log', 'SELECT'), ('rpa_task_audit_log', 'INSERT'),
+    ('rpa_task_operation_history', 'SELECT'), ('rpa_task_operation_history', 'INSERT'),
+    ('rpa_task_operation_history', 'UPDATE'), ('rpa_task_operation_history', 'DELETE'),
     ('rpa_task_run_requests', 'SELECT'),
     ('rpa_task_run_requests', 'INSERT'),
     ('rpa_task_run_requests', 'UPDATE'),
+    ('rpa_plan_creation_whitelist','SELECT'), ('rpa_plan_creation_whitelist','INSERT'), ('rpa_plan_creation_whitelist','DELETE'), ('rpa_plan_sync_whitelist','SELECT'), ('rpa_plan_sync_whitelist','INSERT'), ('rpa_plan_sync_whitelist','DELETE'), ('rpa_plan_scan_snapshots','SELECT'), ('rpa_plan_scan_snapshots','INSERT'), ('rpa_plan_scan_snapshots','UPDATE'), ('rpa_plan_scan_snapshots','DELETE'),
     ('app_sessions', 'SELECT'), ('app_sessions', 'INSERT'),
     ('app_sessions', 'UPDATE'), ('app_sessions', 'DELETE')
 )
@@ -108,8 +111,9 @@ WITH tables(table_name) AS (
     ('rpa_task_binding_history'),
     ('rpa_task_executions'),
     ('rpa_task_audit_log'),
+    ('rpa_task_operation_history'),
     ('rpa_task_run_requests'),
-    ('app_sessions')
+    ('rpa_plan_creation_whitelist'), ('rpa_plan_sync_whitelist'), ('rpa_plan_scan_snapshots'), ('app_sessions')
 ), privileges(privilege) AS (
   VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
          ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')
@@ -126,9 +130,12 @@ WITH tables(table_name) AS (
     ('rpa_task_executions', 'UPDATE'),
     ('rpa_task_executions', 'DELETE'),
     ('rpa_task_audit_log', 'SELECT'), ('rpa_task_audit_log', 'INSERT'),
+    ('rpa_task_operation_history', 'SELECT'), ('rpa_task_operation_history', 'INSERT'),
+    ('rpa_task_operation_history', 'UPDATE'), ('rpa_task_operation_history', 'DELETE'),
     ('rpa_task_run_requests', 'SELECT'),
     ('rpa_task_run_requests', 'INSERT'),
     ('rpa_task_run_requests', 'UPDATE'),
+    ('rpa_plan_creation_whitelist','SELECT'), ('rpa_plan_creation_whitelist','INSERT'), ('rpa_plan_creation_whitelist','DELETE'), ('rpa_plan_sync_whitelist','SELECT'), ('rpa_plan_sync_whitelist','INSERT'), ('rpa_plan_sync_whitelist','DELETE'), ('rpa_plan_scan_snapshots','SELECT'), ('rpa_plan_scan_snapshots','INSERT'), ('rpa_plan_scan_snapshots','UPDATE'), ('rpa_plan_scan_snapshots','DELETE'),
     ('app_sessions', 'SELECT'), ('app_sessions', 'INSERT'),
     ('app_sessions', 'UPDATE'), ('app_sessions', 'DELETE')
 )
@@ -157,6 +164,7 @@ WITH sequences(sequence_name) AS (
     ('app_users_id_seq'),
     ('rpa_tasks_id_seq'),
     ('rpa_task_binding_history_id_seq'),
+    ('rpa_task_operation_history_id_seq'),
     ('rpa_task_audit_log_id_seq')
 )
 SELECT NOT EXISTS (

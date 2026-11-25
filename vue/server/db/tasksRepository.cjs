@@ -2,17 +2,22 @@ const { mapTaskRow, normalizeTags, timestampAfter, toApiId, toIsoString } = requ
 const { resolveExecutor, withTransaction } = require('./repositoryUtils.cjs');
 
 const TASK_RETURNING_COLUMNS = `
-  id, task, start_time, finish_time, bot,
+  id, task, start_time, finish_time, bot, is_hidden,
   created_by_user_id, owner_user_id, schedule_uuid, schedule_bound_at,
-  tags, note, version, last_synced_at, sync_error,
+  tags, note, timing_mode, expected_duration_seconds,
+  schedule_cron_expression, schedule_cron_synced_at, schedule_cron_error,
+  schedule_dispatch, schedule_dispatch_synced_at, schedule_dispatch_error,
+  version, last_synced_at, sync_error,
   created_at, updated_at, deleted_at`;
 
 const TASK_LIST_SELECT = `
   SELECT
-    task.id, task.task, task.start_time, task.finish_time, task.bot,
+    task.id, task.task, task.start_time, task.finish_time, task.bot, task.is_hidden,
     task.created_by_user_id, task.owner_user_id,
     task.schedule_uuid, task.schedule_bound_at,
-    task.tags, task.note, task.version,
+    task.tags, task.note, task.timing_mode, task.expected_duration_seconds,
+    task.schedule_cron_expression, task.schedule_cron_synced_at, task.schedule_cron_error, task.version,
+    task.schedule_dispatch, task.schedule_dispatch_synced_at, task.schedule_dispatch_error,
     task.last_synced_at, task.sync_error,
     task.created_at, task.updated_at, task.deleted_at,
     owner.id AS owner_id,
@@ -158,8 +163,8 @@ function createTasksRepository(db) {
         `INSERT INTO public.rpa_tasks (
            task, start_time, finish_time, bot,
            created_by_user_id, owner_user_id,
-           schedule_uuid, schedule_bound_at, tags, note
-         ) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::text[], $9)
+           schedule_uuid, schedule_bound_at, tags, note, timing_mode, expected_duration_seconds
+         ) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::text[], $9, $10, $11)
          RETURNING ${TASK_RETURNING_COLUMNS}`,
         [
           data.task,
@@ -171,6 +176,8 @@ function createTasksRepository(db) {
           boundAt,
           tags,
           data.note || '',
+          data.timingMode || 'single',
+          data.expectedDurationSeconds ?? 60,
         ]
       );
       await client.query(
@@ -192,6 +199,8 @@ function createTasksRepository(db) {
       bot: 'bot',
       tags: 'tags',
       note: 'note',
+      timing_mode: 'timing_mode',
+      expected_duration_seconds: 'expected_duration_seconds',
     };
     const assignments = [];
     const params = [id, ownerUserId, version];
@@ -305,6 +314,12 @@ function createTasksRepository(db) {
                 schedule_bound_at = $3,
                 last_synced_at = NULL,
                 sync_error = NULL,
+                schedule_cron_expression = NULL,
+                schedule_cron_synced_at = NULL,
+                schedule_cron_error = NULL,
+                schedule_dispatch = '{}'::jsonb,
+                schedule_dispatch_synced_at = NULL,
+                schedule_dispatch_error = NULL,
                 version = version + 1
           WHERE id = $1
         RETURNING ${TASK_RETURNING_COLUMNS}`,
@@ -459,7 +474,66 @@ function createTasksRepository(db) {
     return mapTaskRow(rows[0]);
   }
 
+  async function updateScheduleCron(attempt, { expression = null, error = null, syncedAt = new Date() }) {
+    const { rows } = await db.query(
+      `UPDATE public.rpa_tasks SET
+         schedule_cron_expression = CASE WHEN $5::text IS NULL THEN $4 ELSE schedule_cron_expression END,
+         schedule_cron_synced_at = CASE WHEN $5::text IS NULL THEN $6 ELSE schedule_cron_synced_at END,
+         schedule_cron_error = $5
+       WHERE id = $1 AND schedule_uuid = $2 AND deleted_at IS NULL
+         AND date_trunc('milliseconds', schedule_bound_at) IS NOT DISTINCT FROM $3::timestamptz
+         AND sync_generation = $7::bigint AND timing_mode = 'cron'
+         AND NOT EXISTS (SELECT 1 FROM public.rpa_plan_sync_whitelist w
+           WHERE w.task_id=rpa_tasks.id AND w.schedule_uuid=rpa_tasks.schedule_uuid AND w.field='schedule_cron_expression')
+       RETURNING id`,
+      [attempt.taskId, attempt.scheduleUuid, attempt.scheduleBoundAt, expression, error, syncedAt, attempt.syncGeneration]
+    );
+    return rows[0] || null;
+  }
+
+  async function updateScheduleDispatch(attempt, { dispatch = {}, error = null, syncedAt = new Date() }) {
+    const { rows } = await db.query(
+      `UPDATE public.rpa_tasks SET
+         schedule_dispatch = CASE WHEN $5::text IS NULL THEN $4::jsonb ELSE schedule_dispatch END,
+         schedule_dispatch_synced_at = CASE WHEN $5::text IS NULL THEN $6 ELSE schedule_dispatch_synced_at END,
+         schedule_dispatch_error = $5
+       WHERE id = $1 AND schedule_uuid = $2 AND deleted_at IS NULL
+         AND date_trunc('milliseconds', schedule_bound_at) IS NOT DISTINCT FROM $3::timestamptz
+         AND sync_generation = $7::bigint
+         AND NOT EXISTS (SELECT 1 FROM public.rpa_plan_sync_whitelist w
+           WHERE w.task_id=rpa_tasks.id AND w.schedule_uuid=rpa_tasks.schedule_uuid AND w.field='schedule_dispatch')
+       RETURNING id`,
+      [attempt.taskId, attempt.scheduleUuid, attempt.scheduleBoundAt, JSON.stringify(dispatch), error, syncedAt, attempt.syncGeneration]
+    );
+    return rows[0] || null;
+  }
+
+
+  async function setVisibility(actor, changes) {
+    const { ConflictError, NotFoundError, AdminRequiredError } = require('../errors.cjs');
+    if (!actor.isAdmin) throw new AdminRequiredError('仅管理员可修改隐藏任务名单');
+    const { addAudit } = require('../services/taskMutationService.cjs');
+    await withTransaction(db, async client => {
+      const ids = changes.map(change => change.id);
+      const { rows } = await client.query('SELECT * FROM public.rpa_tasks WHERE id=ANY($1::bigint[]) AND deleted_at IS NULL ORDER BY id FOR UPDATE', [ids]);
+      if (rows.length !== ids.length) throw new NotFoundError('部分任务已删除，请刷新名单');
+      const current = new Map(rows.map(row => [String(row.id), row.is_hidden]));
+      for (const change of changes) {
+        if (current.get(change.id) !== change.expected_hidden) throw new ConflictError('VISIBILITY_CONFLICT', '隐藏名单已被其他人修改，请重新打开后设置');
+      }
+      for (const change of changes) {
+        if (change.is_hidden === change.expected_hidden) continue;
+        await client.query('UPDATE public.rpa_tasks SET is_hidden=$2 WHERE id=$1', [change.id, change.is_hidden]);
+        const beforeTask = rows.find(row => String(row.id) === change.id);
+        await addAudit(client, { taskId: change.id, actorUserId: actor.userId, action: 'update', historyScope: 'visibility',
+          beforeTask, afterTask: { ...beforeTask, is_hidden: change.is_hidden },
+          oldValue: { is_hidden: change.expected_hidden }, newValue: { is_hidden: change.is_hidden, scope: 'visibility' } });
+      }
+    });
+    return listVisibleTasks({ currentUserId: actor.userId, currentUserIsAdmin: actor.isAdmin });
+  }
   return Object.freeze({
+    setVisibility,
     listVisibleTasks,
     listAll: (currentUserId, options = {}) => listVisibleTasks({ currentUserId, ...options }),
     listOwnedTasks,
@@ -478,6 +552,8 @@ function createTasksRepository(db) {
     findBindingForScheduleAt,
     beginSyncAttempt,
     updateSyncState,
+    updateScheduleCron,
+    updateScheduleDispatch,
   });
 }
 

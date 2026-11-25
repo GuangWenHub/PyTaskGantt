@@ -1,0 +1,2 @@
+# Migration checksums must be identical in Windows checkouts and Linux deployments.
+vue/storage/migrations/*.sql text eol=lf

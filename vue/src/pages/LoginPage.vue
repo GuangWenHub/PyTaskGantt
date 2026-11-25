@@ -3,13 +3,7 @@
     <section class="login-showcase">
       <div class="login-showcase-inner">
         <div class="login-brand">
-          <span class="header-logo-icon login-brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="3" width="8" height="2.2" rx="1" fill="currentColor" />
-              <rect x="5" y="7" width="9" height="2.2" rx="1" fill="currentColor" opacity=".85" />
-              <rect x="3" y="11" width="7" height="2.2" rx="1" fill="currentColor" opacity=".7" />
-            </svg>
-          </span>
+          <img class="login-brand-logo" :src="'/brand/kocotree-logo.svg'" alt="KOCOTREE" width="171" height="44" />
           <span class="login-brand-name">RPA 任务看板</span>
         </div>
 

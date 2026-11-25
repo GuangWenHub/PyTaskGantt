@@ -30,4 +30,26 @@ describe('任务导入导出', () => {
     expect(output.body).toContain('ScheduleUuid');
     expect(output.body).not.toContain('secret-history');
   });
+
+  it('JSON 导出后重新导入保留多个标签、备注和跨天时间', () => {
+    const task = {
+      task: '报表汇总', start: '23:30:00', finish: '01:15:00', bot: 'A',
+      schedule_uuid: 's-1', tags: ['每日', '财务'], note: '跨天运行',
+    };
+    const output = exportTasks([task], 'json');
+    expect(parseTaskImport(output.body, 'json')).toEqual([{ ...task, timing_mode: 'single', expected_duration_seconds: 60 }]);
+  });
+
+  it('JSON 继续兼容标签数组和旧版逗号分隔的标签', () => {
+    const task = {
+      task: '测试', start: '09:00:00', finish: '10:00:00', bot: 'A',
+      schedule_uuid: 's-1', note: '',
+    };
+    const rows = parseTaskImport(JSON.stringify([
+      { ...task, tags: ['每日', '含逗号,的标签'] },
+      { ...task, tags: '每日, 财务,每日' },
+    ]), 'json');
+    expect(rows[0].tags).toEqual(['每日', '含逗号,的标签']);
+    expect(rows[1].tags).toEqual(['每日', '财务']);
+  });
 });

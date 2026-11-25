@@ -17,10 +17,19 @@ export function normalizeTask(raw = {}) {
     start: raw.start || raw.start_time || '00:00:00',
     finish: raw.finish || raw.finish_time || '00:00:00',
     bot: raw.bot || '',
+    schedule_dispatch: raw.schedule_dispatch || {},
+    schedule_dispatch_synced_at: raw.schedule_dispatch_synced_at || null,
+    schedule_dispatch_error: raw.schedule_dispatch_error || '',
     tags: Array.isArray(raw.tags) ? raw.tags.filter(Boolean) : [],
     note: raw.note || '',
+    timing_mode: raw.timing_mode === 'cron' ? 'cron' : 'single',
+    expected_duration_seconds: Number(raw.expected_duration_seconds || 60),
+    schedule_cron_expression: raw.schedule_cron_expression || '',
+    schedule_cron_synced_at: raw.schedule_cron_synced_at || null,
+    schedule_cron_error: raw.schedule_cron_error || '',
     schedule_uuid: raw.schedule_uuid || '',
     schedule_name: raw.schedule_name || raw.schedule?.schedule_name || '',
+    is_hidden: Boolean(raw.is_hidden),
     version: Number(raw.version || 1),
     owner: normalizeUser(raw.owner),
     created_by: normalizeUser(raw.created_by),
@@ -72,13 +81,18 @@ export async function saveTaskMutations(mutations) {
   }
 }
 
-export async function importTasks(content, format) {
-  return apiRequest('/import', { method: 'POST', body: { content, format } })
+export function previewTaskImport(content, format) {
+  return apiRequest('/import/preview', { method: 'POST', body: { content, format } })
 }
 
-export function exportTasks(format) {
+export function importTasks(content, format, indices) {
+  return apiRequest('/import', { method: 'POST', body: { content, format, indices } })
+}
+
+export function exportTasks(format, taskIds) {
   const suffix = format === 'json' ? 'json' : 'csv'
-  return downloadFromApi(`/export/${suffix}`, `tasks_${new Date().toISOString().slice(0, 10)}.${suffix}`)
+  return downloadFromApi(`/export/${suffix}`, `tasks_${new Date().toISOString().slice(0, 10)}.${suffix}`,
+    taskIds === undefined ? undefined : { body: { task_ids: taskIds } })
 }
 
 export function rebindTask(taskId, scheduleUuid, version) {
@@ -102,12 +116,18 @@ export function recoverTask(taskId, ownerUserId, scheduleUuid, version) {
   })
 }
 
-export function runTask(taskId) {
-  return apiRequest(`/tasks/${encodeURIComponent(taskId)}/run`, { method: 'POST', body: {} })
+export function runTask(taskId, expectedScheduleUuid) {
+  return apiRequest(`/tasks/${encodeURIComponent(taskId)}/run`, {
+    method: 'POST', body: { expected_schedule_uuid: expectedScheduleUuid },
+  })
 }
 
 export function syncTask(taskId) {
   return apiRequest(`/tasks/${encodeURIComponent(taskId)}/sync`, { method: 'POST', body: {} })
+}
+
+export function syncAllTasks() {
+  return apiRequest('/tasks/sync', { method: 'POST' })
 }
 
 export function syncMyTasks() {
@@ -142,4 +162,8 @@ export function normalizeExecutionPayload(payload, params = {}) {
 export async function getTaskExecutions(taskId, params = {}) {
   const payload = await apiRequest(`/tasks/${encodeURIComponent(taskId)}/executions${toQuery(params)}`)
   return normalizeExecutionPayload(payload, params)
+}
+
+export async function setTaskVisibility(changes) {
+  return apiRequest('/tasks/visibility', { method: 'PATCH', body: { changes } })
 }

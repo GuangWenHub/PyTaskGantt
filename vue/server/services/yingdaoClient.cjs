@@ -92,12 +92,18 @@ function calculateBackoffDelay(attempt, {
   return Math.max(0, Math.round(exponential + jitter));
 }
 
+// Keep upstream BIGINT cursor/record IDs exact, including on Node 20.
+function parseYingdaoJson(raw) {
+  const tokens = raw.match(/"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[^"\d-]+|./gs) || []
+  return JSON.parse(tokens.map(token => /^-?\d+$/.test(token) && !Number.isSafeInteger(Number(token)) ? JSON.stringify(token) : token).join(''))
+}
+
 async function readJsonResponse(response) {
   if (response && typeof response.text === 'function') {
     const raw = await response.text();
     if (!raw) return {};
     try {
-      return JSON.parse(raw);
+      return parseYingdaoJson(raw);
     } catch (error) {
       throw new YingdaoApiError('影刀接口返回内容无法识别', {
         status: response.status,
@@ -116,9 +122,10 @@ function normalizePage(body) {
     ? data
     : Array.isArray(data && data.dataList)
       ? data.dataList
-      : [];
+      : Array.isArray(data && data.result) ? data.result : [];
   const page = body && body.page && typeof body.page === 'object'
     ? body.page
+    : data?.pageDTO && typeof data.pageDTO === 'object' ? data.pageDTO
     : data && typeof data === 'object'
       ? {
           hasData: data.hasData,
@@ -265,6 +272,8 @@ class YingdaoClient {
     this.scheduleFlights = new Map();
     this.scheduleDetailFlights = new Map();
     this.jobLogFlights = new Map();
+    this.executionPageCache = new Map();
+    this.executionPageFlights = new Map();
   }
 
   _secrets(extra = []) {
@@ -584,6 +593,41 @@ class YingdaoClient {
     };
   }
 
+  // Reconciliation must not use stale caches or omit disabled plans.
+  async getScheduleInventory(onProgress = () => {}) {
+    const inventory = new Map();
+    for (const enabled of [true, false]) {
+      let expectedTotal = null, expectedPages = null, count = 0;
+      const seen = new Set();
+      for (let page = 1; page <= 200; page++) {
+        const raw = await this.request('/oapi/dispatch/v2/schedule/list', { page, size: 100, enabled });
+        const metadata = raw.page;
+        const { items } = normalizePage(raw);
+        if (!metadata || !Number.isInteger(metadata.total) || metadata.total < 0
+          || !Number.isInteger(metadata.pages) || metadata.pages < 0 || metadata.page !== page
+          || (expectedTotal !== null && (metadata.total !== expectedTotal || metadata.pages !== expectedPages))) {
+          throw new YingdaoApiError('影刀计划分页信息不完整或扫描期间发生变化，请重新扫描');
+        }
+        expectedTotal = metadata.total;
+        expectedPages = metadata.pages;
+        for (const plan of items) {
+          const uuid = String(plan.scheduleUuid || '').trim();
+          if (!uuid || seen.has(uuid) || inventory.has(uuid)) throw new YingdaoApiError('影刀计划分页重复或状态已变化，请重新扫描');
+          seen.add(uuid);
+          inventory.set(uuid, { schedule_uuid: uuid, schedule_name: String(plan.scheduleName || ''), enabled });
+        }
+        count += items.length;
+        onProgress({ enabled, count, total: expectedTotal });
+        if (page >= Math.max(1, expectedPages)) {
+          if (count !== expectedTotal) throw new YingdaoApiError('影刀计划列表数量不完整，请重新扫描');
+          break;
+        }
+        if (!items.length || page === 200) throw new YingdaoApiError('影刀计划分页未完整结束，请缩小规模后重试');
+      }
+    }
+    return [...inventory.values()];
+  }
+
   getScheduleDetail(scheduleUuid, { forceRefresh = false } = {}) {
     const uuid = String(scheduleUuid || '').trim();
     if (!uuid) return Promise.reject(new TypeError('scheduleUuid 为必填'));
@@ -693,6 +737,35 @@ class YingdaoClient {
     return executions;
   }
 
+  async getExecutionPage(params = {}, { forceRefresh = false } = {}) {
+    const payload = { ...params, sourceUuid: String(params.sourceUuid || ''),
+      size: Math.min(100, Math.max(1, Number(params.size) || 20)), cursorDirection: params.cursorDirection || 'next' };
+    if (payload.cursorId != null) {
+      if (typeof payload.cursorId === 'number' && !Number.isSafeInteger(payload.cursorId)) throw new TypeError('运行记录游标必须使用精确字符串');
+      payload.cursorId = String(payload.cursorId);
+    }
+    const key = JSON.stringify(Object.keys(payload).sort().filter(name => payload[name] != null).map(name => [name, payload[name]]));
+    const now = this.now();
+    pruneCache(this.executionPageCache, { now, maxAgeMs: 15000, maxEntries: 400 });
+    const cached = this.executionPageCache.get(key);
+    if (!forceRefresh && cached && now - cached.fetchedAt < 15000) return { response: structuredClone(cached.value), fetched_at: new Date(cached.fetchedAt).toISOString(), cache_hit: true };
+    let flight = this.executionPageFlights.get(key);
+    if (!flight) {
+      flight = (async () => {
+        const value = await this.request('/oapi/dispatch/v2/task/list', payload);
+        if (!Array.isArray(value?.data) && !Array.isArray(value?.data?.dataList) && !Array.isArray(value?.data?.result)) throw new Error('影刀运行记录响应缺少列表');
+        const entry = { value, fetchedAt: this.now() };
+        this.executionPageCache.set(key, entry);
+        pruneCache(this.executionPageCache, { now: entry.fetchedAt, maxAgeMs: 15000, maxEntries: 400 });
+        return entry;
+      })();
+      this.executionPageFlights.set(key, flight);
+      flight.finally(() => { if (this.executionPageFlights.get(key) === flight) this.executionPageFlights.delete(key); }).catch(() => undefined);
+    }
+    const entry = await flight;
+    return { response: structuredClone(entry.value), fetched_at: new Date(entry.fetchedAt).toISOString(), cache_hit: false };
+  }
+
   async listTaskHistory(scheduleUuid, params = {}) {
     const payload = {
       sourceUuid: String(scheduleUuid),
@@ -703,7 +776,7 @@ class YingdaoClient {
     const executions = [];
     const seenCursors = new Set();
     while (true) {
-      const raw = await this.request('/oapi/dispatch/v2/task/list', payload);
+      const { response: raw } = await this.getExecutionPage(payload);
       const { items, page } = normalizePage(raw);
       executions.push(...items);
       const data = raw.data || {};
@@ -714,6 +787,22 @@ class YingdaoClient {
       payload.cursorId = cursor;
     }
     return executions;
+  }
+
+  async listRecentTasks(scheduleUuid) {
+    return (await this.listRecentTaskPage(scheduleUuid, { size: 10 })).items.slice(0, 10);
+  }
+
+  async listRecentTaskPage(scheduleUuid, { cursorId, size = 20 } = {}) {
+    const { response: raw, fetched_at } = await this.getExecutionPage({
+      sourceUuid: String(scheduleUuid), cursorDirection: 'next', size: Math.min(20, Math.max(1, Number(size) || 20)),
+      ...(cursorId ? { cursorId: String(cursorId) } : {}),
+    });
+    const { items, page } = normalizePage(raw);
+    const data = raw.data || {};
+    const nextCursor = data.nextId || page.nextId || null;
+    return { items: items.filter(item => item.taskUuid && (!item.sourceUuid || String(item.sourceUuid) === String(scheduleUuid))),
+      fetched_at, nextCursor, hasMore: (data.hasData ?? page.hasData) !== false && Boolean(nextCursor) && items.length > 0 };
   }
 
   async startTask(scheduleUuid, options = {}) {
@@ -824,6 +913,8 @@ class ScheduleDirectory {
     this.client = client;
     this.findBinding = findBinding;
     this.listBindings = listBindings;
+    this.editorRunsCache = new Map();
+    this.editorRunsFlights = new Map();
   }
 
   async list(filters = {}) {
@@ -888,6 +979,46 @@ class ScheduleDirectory {
       });
     }
     return { schedule: result.schedule, cache: result.cache, binding };
+  }
+
+  async getCron(scheduleUuid) {
+    const { parseYingdaoCron, scheduleCronExpression } = require('../../shared/yingdaoCron.mjs');
+    const result = await this.client.getScheduleDetail(scheduleUuid);
+    const source = result.schedule?.cronInterface;
+    if (!source || !['cron', 'minute'].includes(source.type)) {
+      throw new ScheduleDirectoryError('绑定的影刀计划没有 Cron 定时规则', { code: 'SCHEDULE_CRON_MISSING' });
+    }
+    let parsed;
+    try { parsed = parseYingdaoCron(scheduleCronExpression(source)); }
+    catch (error) { throw new ScheduleDirectoryError(error.message, { code: 'SCHEDULE_CRON_INVALID' }); }
+    return { expression: parsed.expression, count: parsed.seconds.length, times: parsed.seconds,
+      fetched_at: result.cache?.fetchedAt || new Date().toISOString(), stale: Boolean(result.cache?.stale) };
+  }
+
+  async getEditorPlan(uuid) {
+    return require('./scheduleEditor.cjs').getEditorPlan(this.client, String(uuid));
+  }
+
+  async getRecentRuns(uuid) {
+    const key = String(uuid);
+    const cached = this.editorRunsCache.get(key);
+    if (cached && Date.now() - cached.time < 30000) return cached.value;
+    if (this.editorRunsFlights.has(key)) return this.editorRunsFlights.get(key);
+    const flight = (async () => {
+      await this.getEditorPlan(key);
+      const value = await require('./scheduleEditor.cjs').getRecentRuns(this.client, key);
+      if (this.editorRunsCache.size >= 40) this.editorRunsCache.delete(this.editorRunsCache.keys().next().value);
+      if (!value.incomplete) this.editorRunsCache.set(key, { time: Date.now(), value });
+      return value;
+    })();
+    this.editorRunsFlights.set(key, flight);
+    try { return await flight; } finally { this.editorRunsFlights.delete(key); }
+  }
+
+  async getDispatch(scheduleUuid) {
+    const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
+    const result = await this.client.getScheduleDetail(scheduleUuid);
+    return { dispatch: normalizeScheduleDispatch(result.schedule), fetched_at: result.cache?.fetchedAt || new Date().toISOString(), stale: Boolean(result.cache?.stale) };
   }
 }
 
@@ -977,5 +1108,6 @@ module.exports = {
   sanitizeForLog,
   calculateBackoffDelay,
   normalizePage,
+  parseYingdaoJson,
   normalizeJobLogPagination,
 };

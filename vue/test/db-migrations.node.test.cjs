@@ -10,9 +10,9 @@ const {
   MigrationError,
 } = require('../server/db/migrations.cjs');
 
-test('migration catalog is exactly the ordered 001-007 target', () => {
+test('migration catalog is exactly the ordered 001-013 target', () => {
   const migrations = discoverMigrations();
-  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(migrations.map(item => item.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   assert.deepEqual(migrations.map(item => item.name), [
     '001_add_users_and_task_ownership.sql',
     '002_add_executions_and_binding_history.sql',
@@ -21,6 +21,12 @@ test('migration catalog is exactly the ordered 001-007 target', () => {
     '005_add_durable_run_requests.sql',
     '006_add_binding_scoped_sync_generation.sql',
     '007_add_admin_permission.sql',
+    '008_add_task_operation_history.sql',
+    '009_add_cron_task_display.sql',
+    '010_add_schedule_dispatch_cache.sql',
+    '011_add_plan_reconciliation_state.sql',
+    '012_add_plan_creation_whitelist.sql',
+    '013_add_task_visibility.sql',
   ]);
   migrations.forEach(item => assert.match(item.checksum, /^[a-f0-9]{64}$/));
 });
@@ -33,6 +39,7 @@ test('migrations contain every required durable table and critical invariant', (
     'rpa_task_executions',
     'rpa_task_binding_history',
     'rpa_task_audit_log',
+    'rpa_task_operation_history',
     'rpa_task_run_requests',
     'app_sessions',
   ]) {
@@ -76,7 +83,7 @@ test('startup comparison rejects missing, outdated, and rewritten migration hist
     () => compareMigrationState(migrations, rewritten),
     error => error.code === 'MIGRATION_CHECKSUM_MISMATCH'
   );
-  assert.equal(compareMigrationState(migrations, migrations).currentVersion, 7);
+  assert.equal(compareMigrationState(migrations, migrations).currentVersion, 13);
 });
 
 test('manual runner refuses non-contiguous applied history instead of migrating out of order', async () => {

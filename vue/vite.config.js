@@ -13,6 +13,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [vue()],
+    // Worktrees share node_modules; each checkout needs its own optimizer cache.
+    cacheDir: '.vite',
+    optimizeDeps: {
+      include: ['vue', 'vue-router', 'naive-ui', 'vis-data', 'vis-timeline/standalone'],
+    },
     server: {
       port: devPort,
       host: devHost,

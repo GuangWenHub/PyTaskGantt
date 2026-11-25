@@ -58,6 +58,7 @@ function createRecoveryHarness({
             return { rows: [] };
           }
           const target = client.tx || state;
+          if (text.includes('public.rpa_task_operation_history')) return { rows: [] };
           if (text.startsWith('SELECT * FROM rpa_tasks')) {
             return { rows: target.task && !target.task.deleted_at ? [{ ...target.task }] : [] };
           }
@@ -91,7 +92,7 @@ function createRecoveryHarness({
               schedule_bound_at: params[3],
               version: Number(target.task.version) + 1,
             });
-            return { rows: [{ id: target.task.id }] };
+            return { rows: [{ ...target.task }] };
           }
           if (text.startsWith('INSERT INTO rpa_task_audit_log')) {
             if (auditError) throw auditError;
@@ -196,6 +197,7 @@ test('管理员批量更新其他用户任务时保持所有者不变并写入 o
   const client = {
     async query(sql, params = []) {
       calls.push({ sql: String(sql), params });
+      if (String(sql).includes('public.rpa_task_operation_history')) return { rows: [] };
       return responses.shift() || { rows: [] };
     },
     release() {},

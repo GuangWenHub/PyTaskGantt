@@ -2,7 +2,8 @@
 
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getCurrentTimeWindow } from '../src/services/dataService.js'
 
 const timelineState = vi.hoisted(() => ({ instances: [] }))
 
@@ -43,6 +44,7 @@ vi.mock('vis-timeline/standalone', () => ({
       this.groups = groups
       this.options = options
       this.handlers = {}
+      this.customTimes = new Map()
       timelineState.instances.push(this)
     }
 
@@ -55,10 +57,24 @@ vi.mock('vis-timeline/standalone', () => ({
     redraw() {
       this.redrawCalls = (this.redrawCalls || 0) + 1
     }
-    setWindow() {}
+    addCustomTime(time, id) {
+      this.customTimes.set(id, { time })
+    }
+    setCustomTime(time, id) { this.customTimes.get(id).time = time }
+    removeCustomTime(id) { this.customTimes.delete(id) }
+    setCustomTimeTitle(title, id) {
+      this.customTimes.get(id).title = title
+    }
+    setWindow(start, end, options) {
+      this.window = { start, end }
+      this.windowOptions = options
+      this.setWindowCalls = (this.setWindowCalls || 0) + 1
+      this.handlers.rangechange?.()
+      this.handlers.rangechanged?.()
+    }
     getWindow() {
-      return {
-        start: new Date('2025-01-01T08:30:00'),
+      return this.window || {
+        start: new Date('2025-01-01T08:00:00'),
         end: new Date('2025-01-01T13:00:00'),
       }
     }
@@ -66,6 +82,7 @@ vi.mock('vis-timeline/standalone', () => ({
 }))
 
 import GanttChart from '../src/components/GanttChart.vue'
+import { projectSharedTasks } from '../shared/scheduleDispatch.mjs'
 
 function task(overrides = {}) {
   return {
@@ -81,8 +98,314 @@ function task(overrides = {}) {
 }
 
 describe('GanttChart ownership boundary', () => {
+  it('共享候选条目悬浮仍显示完整候选名单', async () => {
+    const source = task({ schedule_dispatch: { execute_scope: 'any', clients: [{ id: 'a', name: '机器甲@企业' }, { id: 'b', name: '机器乙@企业' }, { id: 'c', name: '机器丙@企业' }] } })
+    const row = projectSharedTasks([source])[0]
+    const wrapper = mount(GanttChart, { props: { tasks: [row] } })
+    const timeline = timelineState.instances.at(-1)
+    timeline.handlers.itemover({ item: row.view_id })
+    await nextTick()
+    const text = [...document.querySelectorAll('.gantt-drag-tip')].at(-1).textContent
+    for (const name of ['机器甲@企业', '机器乙@企业', '机器丙@企业']) expect(text).toContain(name)
+    wrapper.unmount()
+  })
+  it('8:30和17:30参考线默认开启，共同关闭和恢复，不改变视窗', async () => {
+    const wrapper = mount(GanttChart, { props: { tasks: [] } })
+    const timeline = timelineState.instances.at(-1), window = timeline.getWindow()
+    expect(timeline.customTimes.get('schedule-reference-evening').time).toEqual(new Date('2025-01-01T17:30:00'))
+    await wrapper.setProps({ showReferenceLines: false })
+    expect(timeline.customTimes.has('schedule-reference-evening')).toBe(false)
+    expect(timeline.customTimes.has('schedule-reference')).toBe(false)
+    await wrapper.setProps({ showReferenceLines: true })
+    expect(timeline.customTimes.has('schedule-reference-evening')).toBe(true)
+    expect(timeline.getWindow()).toEqual(window)
+    wrapper.unmount()
+  })
+  it('当前时间线默认关闭，开启按上海时钟移动且不滚动视窗，跨午夜重新映射每日模板，关闭清理计时器', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(new Date('2026-11-13T15:59:59Z'))
+    const wrapper = mount(GanttChart, { props: { tasks: [] } })
+    const timeline = timelineState.instances.at(-1), window = timeline.getWindow()
+    expect(timeline.customTimes.has('schedule-current')).toBe(false)
+    await wrapper.setProps({ showCurrentTimeLine: true })
+    expect(timeline.customTimes.get('schedule-current').time).toEqual(new Date('2025-01-01T23:59:59'))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(timeline.customTimes.get('schedule-current').time).toEqual(new Date('2025-01-01T00:00:01'))
+    expect(timeline.getWindow()).toEqual(window)
+    expect(timeline.customTimes.get('schedule-reference').time).toEqual(new Date('2025-01-01T08:30:00'))
+    timeline.setWindow(new Date('2025-01-01T00:00:00'), new Date('2025-01-01T00:05:00'))
+    await nextTick()
+    expect(wrapper.get('.gantt-container').classes()).toContain('gantt-reference-easter-egg')
+    await wrapper.setProps({ showCurrentTimeLine: false })
+    expect(timeline.customTimes.has('schedule-current')).toBe(false)
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+  it('运行状态只作用于真实任务条，切换开关保留当前视窗和任务时间', async () => {
+    const row = task({ schedule_uuid: 'plan', schedule_bound_at: '2026-11-01T00:00:00Z' })
+    const wrapper = mount(GanttChart, { props: { tasks: [row], showTaskNames: true } })
+    const timeline = timelineState.instances.at(-1), original = timeline.items.get('1'), window = timeline.getWindow()
+    await wrapper.setProps({ showRunStatus: true, runStatus: { date: '2026-11-13', tasks: [{ id: '1', schedule_uuid: 'plan', schedule_bound_at: row.schedule_bound_at, state: 'ready' }], records: [{ task_id: '1', schedule_uuid: 'plan', trigger_time: '2026-11-13T09:00:01+08:00', status: '运行成功' }] } })
+    const bar = timeline.items.get('1')
+    expect(bar.className).toContain('with-run-strip')
+    expect(bar.style).toContain('#22a35a')
+    expect(bar.start).toEqual(original.start)
+    expect(bar.end).toEqual(original.end)
+    expect(timeline.items.get('1:task-name')?.className || '').not.toContain('with-run-strip')
+    expect(wrapper.find('.run-status-caption').exists()).toBe(false)
+    await wrapper.setProps({ showRunStatus: false })
+    expect(timeline.items.get('1').className).not.toContain('with-run-strip')
+    expect(wrapper.find('.run-status-caption').exists()).toBe(false)
+    expect(timeline.getWindow()).toEqual(window)
+    wrapper.unmount()
+  })
+  it('名称开启默认收起侧栏且可手动展开，关闭名称时重新展开，不改变时间视窗', async () => {
+    const wrapper = mount(GanttChart, { props: { tasks: [task()], showTaskNames: true } })
+    const timeline = timelineState.instances.at(-1), initial = timeline.getWindow()
+    expect(wrapper.get('.gantt-container').classes()).toContain('gantt-sidebar-collapsed')
+    await wrapper.get('.gantt-sidebar-toggle').trigger('click')
+    expect(wrapper.get('.gantt-container').classes()).not.toContain('gantt-sidebar-collapsed')
+    await wrapper.setProps({ showTaskNames: false })
+    expect(wrapper.get('.gantt-container').classes()).not.toContain('gantt-sidebar-collapsed')
+    await wrapper.setProps({ showTaskNames: true })
+    expect(wrapper.get('.gantt-container').classes()).toContain('gantt-sidebar-collapsed')
+    expect(timeline.getWindow()).toEqual(initial)
+    wrapper.unmount()
+  })
+
+  it('名称叠层使用安全文本且不参与拖拽，关闭时只移除名称并保留时间视窗', async () => {
+    const wrapper = mount(GanttChart, { props: { tasks: [task({ task: '<b>完整任务名称</b>' })], showTaskNames: true } })
+    const timeline = timelineState.instances.at(-1)
+    timeline.setWindow(new Date('2025-01-01T08:00:00'), new Date('2025-01-01T13:00:00'))
+    const label = timeline.items.get('1:task-name')
+    expect(label.content.textContent).toBe('<b>完整任务名称</b>')
+    expect(label.content.querySelector('b')).toBeNull()
+    expect(label.start).toEqual(new Date('2025-01-01T09:00:00'))
+    expect(label.editable).toBe(false)
+    const callback = vi.fn()
+    timeline.options.onMove(label, callback)
+    expect(callback).toHaveBeenCalledWith(null)
+    timeline.handlers.click({ item: label.id, what: 'item' })
+    expect(wrapper.emitted('task-click')).toBeUndefined()
+    const windowBefore = timeline.getWindow()
+    await wrapper.setProps({ showTaskNames: false })
+    expect(timeline.items.get('1:task-name')).toBeUndefined()
+    expect(timeline.items.get('1')).toBeTruthy()
+    expect(timeline.getWindow()).toEqual(windowBefore)
+    wrapper.unmount()
+  })
+  it('跨天长任务名称从可见区间左侧开始，循环任务每条轨道仅一份名称', () => {
+    const wrapper = mount(GanttChart, { props: { tasks: [task({ start: '23:50:00', finish: '00:20:00' }), task({ id: '2', timing_mode: 'cron', schedule_cron_expression: '0 0-8/2 * * *', expected_duration_seconds: 60 })], showTaskNames: true } })
+    const timeline = timelineState.instances.at(-1)
+    timeline.setWindow(new Date('2025-01-01T23:55:00'), new Date('2025-01-02T00:10:00'))
+    expect(timeline.items.get('1:task-name').start).toEqual(new Date('2025-01-01T23:55:00'))
+    expect(timeline.items.get('2:task-name')).toBeUndefined()
+    timeline.setWindow(new Date('2025-01-01T00:00:00'), new Date('2025-01-01T09:00:00'))
+    const labels = timeline.items.getIds().map(id => timeline.items.get(id)).filter(item => item._task_name_label)
+    expect(labels).toHaveLength(1)
+    expect(labels[0].group).toBe('2')
+    expect(timeline.items.getIds().filter(id => String(id).includes(':cron:'))).toHaveLength(5)
+    wrapper.unmount()
+  })
+
+  it('标题栏移除隐藏显示按钮，设置打开完整显示设置', async () => {
+    const wrapper = mount(GanttChart, { props: { tasks: [] } })
+    const buttons = wrapper.findAll('button')
+    expect(buttons.map(button => button.text())).toEqual(['自适应', '重置', '设置', '‹'])
+    await buttons.find(button => button.text() === '设置').trigger('click')
+    expect(wrapper.emitted('manage-hidden')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('候选机器投影身份独立、禁止拖拽，点击时恢复源任务机器字段', () => {
+    const source = task({ schedule_dispatch: { execute_scope: 'any', clients: [{ id: 'a', name: 'admin@tenant' }, { id: 'b', name: 'bot_1@tenant' }] } })
+    const rows = projectSharedTasks([source])
+    const wrapper = mount(GanttChart, { props: { tasks: rows } })
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.items.getIds()).toHaveLength(2)
+    for (const row of rows) {
+      const item = timeline.items.get(row.view_id)
+      const label = timeline.groups.get(row.view_id).content
+      expect(label).toBeInstanceOf(HTMLElement)
+      expect(label.querySelector('.gantt-label-name').textContent).toContain(`${row.bot} · 候选`)
+      expect(label.querySelector('.gantt-label-owner-name').textContent).toBe(source.owner.display_name)
+      expect(item.editable).toBe(false)
+      expect(item.className).toContain('shared-candidate')
+      const callback = vi.fn()
+      timeline.options.onMove(item, callback)
+      expect(callback).toHaveBeenCalledWith(null)
+      timeline.handlers.click({ item: row.view_id, what: 'item' })
+    }
+    expect(wrapper.emitted('task-update')).toBeUndefined()
+    expect(wrapper.emitted('task-click')).toEqual([[source], [source]])
+    wrapper.unmount()
+  })
+  it('循环任务保留一行，多次触发不可拖拽，点击仍编辑完整任务', async () => {
+    const recurring = task({ timing_mode: 'cron', schedule_cron_expression: '0 0-8/2 * * *', expected_duration_seconds: 60, start: '00:00:00', finish: '08:00:00' })
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [recurring] },
+      global: { stubs: { NCard: { template: '<section><slot/><slot name="header-extra"/></section>' }, NSpace: true, NButton: true, NEmpty: true, teleport: true } },
+    })
+    await nextTick()
+    const timeline = timelineState.instances.at(-1)
+    const items = timeline.items.getIds().map(id => timeline.items.get(id))
+    expect(items).toHaveLength(5)
+    expect(timeline.groups.getIds()).toHaveLength(1)
+    expect(items.map(item => item.start.getHours())).toEqual([0, 2, 4, 6, 8])
+    expect(items.at(-1).end.getMinutes()).toBe(1)
+    const callback = vi.fn()
+    timeline.options.onMove(items[0], callback)
+    expect(callback).toHaveBeenCalledWith(null)
+    expect(wrapper.emitted('task-update')).toBeUndefined()
+    timeline.handlers.click({ item: items.at(-1).id, what: 'item' })
+    expect(wrapper.emitted('task-click')[0][0]).toMatchObject({ id: '1', start: '00:00:00', finish: '08:00:00', timing_mode: 'cron' })
+    wrapper.unmount()
+  })
+  it('高密度规则随视窗聚合和展开，规则缺失时不伪造单段时间条', async () => {
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [task({ timing_mode: 'cron', schedule_cron_expression: '* * * * *', expected_duration_seconds: 120 }), task({ id: '2', timing_mode: 'cron' })] },
+      global: { stubs: { NCard: { template: '<section><slot/></section>' }, NSpace: true, NButton: true, NEmpty: true, teleport: true } },
+    })
+    await nextTick()
+    const timeline = timelineState.instances.at(-1)
+    timeline.setWindow(new Date('2025-01-01T00:00:00'), new Date('2025-01-02T00:00:00'))
+    expect(timeline.items.getIds()).toHaveLength(120)
+    expect(timeline.items.get('1:cron:0')._cron_count).toBe(12)
+    timeline.setWindow(new Date('2025-01-01T23:55:00'), new Date('2025-01-02T00:00:00'))
+    expect(timeline.items.getIds()).toHaveLength(1440)
+    expect(timeline.items.get('1:cron:86340').end).toEqual(new Date('2025-01-02T00:01:00'))
+    expect(timeline.groups.get('2').content.textContent).toContain('规则待同步')
+    wrapper.unmount()
+  })
   beforeEach(() => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=; Max-Age=0; Path=/'
     timelineState.instances.length = 0
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-20T06:00:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('首次绘制后滑到当前时间，任务轮询刷新不重置用户视窗', async () => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [] },
+      global: {
+        stubs: {
+          NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+          NSpace: { template: '<div><slot/></div>' },
+          NButton: { template: '<button><slot/></button>' },
+          NEmpty: { template: '<div />' },
+          teleport: true,
+        },
+      },
+    })
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.window).toBeUndefined()
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    expect(timeline.window).toEqual(getCurrentTimeWindow())
+    expect(timeline.windowOptions.animation).toEqual({ duration: 1200, easingFunction: 'easeInOutQuad' })
+    expect(timeline.options.min.getTime()).toBeLessThanOrEqual(new Date('2024-12-31T21:30:00').getTime())
+
+    const chosenWindow = { start: new Date('2025-01-01T09:00:00'), end: new Date('2025-01-01T10:00:00') }
+    timeline.setWindow(chosenWindow.start, chosenWindow.end)
+    await wrapper.setProps({ tasks: [task()] })
+    expect(timeline.window).toEqual(chosenWindow)
+    expect(timeline.setWindowCalls).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('默认关闭自动定位，开启和关闭写 Cookie，重新进入恢复选择', async () => {
+    const mountChart = () => mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    const waitFrames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    let wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBeUndefined()
+    expect(wrapper.findAll('button').some(button => button.text() === '自动滚动')).toBe(false)
+    await wrapper.setProps({ autoScroll: true })
+    expect(timelineState.instances.at(-1).window).toEqual(getCurrentTimeWindow())
+    document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
+    wrapper.unmount()
+    wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBe(1)
+    await wrapper.setProps({ autoScroll: false })
+    document.cookie = 'pytaskgantt.timelineAutoScroll=0; Path=/'
+    wrapper.unmount()
+    wrapper = mountChart()
+    await waitFrames()
+    expect(timelineState.instances.at(-1).setWindowCalls).toBeUndefined()
+    await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
+    expect(timelineState.instances.at(-1).window).toEqual(getCurrentTimeWindow())
+    wrapper.unmount()
+  })
+
+  it('切回标签页或恢复焦点保留用户视窗，重新加载组件才按当前时间定位', async () => {
+    document.cookie = 'pytaskgantt.timelineAutoScroll=1; Path=/'
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const wrapper = mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    await frames()
+    const timeline = timelineState.instances.at(-1)
+    expect(timeline.setWindowCalls).toBe(1)
+    const chosenWindow = { start: new Date('2025-01-01T09:00:00'), end: new Date('2025-01-01T10:00:00') }
+    timeline.setWindow(chosenWindow.start, chosenWindow.end)
+    window.dispatchEvent(new Event('blur'))
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    vi.setSystemTime(new Date('2026-10-20T06:10:00Z'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    expect(timeline.window).toEqual(chosenWindow)
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    window.dispatchEvent(new Event('blur'))
+    vi.setSystemTime(new Date('2026-10-20T06:20:00Z'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    expect(timeline.window).toEqual(chosenWindow)
+    wrapper.unmount()
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(new Event('focus'))
+    await frames()
+    expect(timeline.setWindowCalls).toBe(2)
+    const reloaded = mount(GanttChart, {
+      props: { tasks: [] },
+      global: { stubs: {
+        NCard: { template: '<section><slot name="header"/><slot/><slot name="header-extra"/></section>' },
+        NSpace: { template: '<div><slot/></div>' }, NButton: { template: '<button><slot/></button>' },
+        NEmpty: { template: '<div />' }, teleport: true,
+      } },
+    })
+    await frames()
+    const refreshedTimeline = timelineState.instances.at(-1)
+    expect(refreshedTimeline.setWindowCalls).toBe(1)
+    expect(refreshedTimeline.window).toEqual(getCurrentTimeWindow())
+    reloaded.unmount()
+    visibility.mockRestore()
   })
 
   it('只允许 can_edit 任务拖拽，并将自己的新时间作为 mutation 事件上报', async () => {
@@ -111,6 +434,26 @@ describe('GanttChart ownership boundary', () => {
     expect(timeline).toBeTruthy()
     expect(timeline.options.height).toBe('100%')
     expect(timeline.options.maxHeight).toBeUndefined()
+    expect(timeline.options.start).toEqual(new Date('2025-01-01T00:00:00'))
+    expect(timeline.options.end).toEqual(new Date('2025-01-01T05:00:00'))
+    const reference = {
+      time: new Date('2025-01-01T08:30:00'),
+      title: '',
+    }
+    expect([...timeline.customTimes.values()]).toEqual([reference, { time: new Date('2025-01-01T17:30:00'), title: '' }])
+    const container = wrapper.get('.gantt-container')
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:00'))
+    await nextTick()
+    expect(container.classes()).toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:01'))
+    await nextTick()
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
+    timeline.setWindow(new Date('2025-01-01T08:28:00'), new Date('2025-01-01T08:33:00'))
+    await nextTick()
+    await wrapper.findAll('button').find(button => button.text() === '重置').trigger('click')
+    expect(container.classes()).not.toContain('gantt-reference-easter-egg')
+    expect(timeline.window).toEqual(getCurrentTimeWindow())
 
     const ganttViewport = wrapper.get('.gantt-viewport').element
     const originalInnerHeight = window.innerHeight
@@ -162,6 +505,10 @@ describe('GanttChart ownership boundary', () => {
       { id: '1', start: '10:15:00', finish: '11:05:00' },
     ]])
 
+    await wrapper.setProps({ tasks: [{ ...editable, start: '10:15:00', finish: '11:05:00', _preview_modified: true }] })
+    await nextTick()
+    expect(timeline.items.get('1').className).toContain('task-preview-modified')
+
     await wrapper.setProps({ tasks: [] })
     await nextTick()
     expect(wrapper.get('.gantt-container').classes()).toContain('gantt-container-empty')
@@ -171,6 +518,7 @@ describe('GanttChart ownership boundary', () => {
     await nextTick()
     expect(wrapper.get('.gantt-container').classes()).not.toContain('gantt-container-empty')
     expect(timeline.redrawCalls).toBeGreaterThan(0)
+    expect([...timeline.customTimes.values()]).toEqual([reference, { time: new Date('2025-01-01T17:30:00'), title: '' }])
 
     wrapper.unmount()
   })

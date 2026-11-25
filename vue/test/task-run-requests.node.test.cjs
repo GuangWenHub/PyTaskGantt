@@ -72,6 +72,7 @@ function createHarness({
           }
 
           const transactionState = selectedState(client);
+          if (text.includes('public.rpa_task_operation_history') || text.startsWith('SELECT id FROM public.rpa_tasks')) return { rows: [] };
           if (text.includes('FROM rpa_tasks AS task') && text.includes('requester.is_admin AS requester_is_admin')) {
             const task = transactionState.task;
             return {
@@ -370,6 +371,12 @@ test('an active execution from an earlier binding does not block the current sch
   assert.equal(result.task_uuid, 'remote-1');
   assert.equal(harness.startCalls.length, 1);
   assert.equal(harness.startCalls[0].scheduleUuid, 'schedule-1');
+});
+
+test('重试时发现任务已换绑，拒绝发送执行请求', async () => {
+  const harness = createHarness();
+  await assert.rejects(harness.service.runNow('7', '1', 'schedule-old'), { code: 'TASK_BINDING_CHANGED' });
+  assert.equal(harness.startCalls.length, 0);
 });
 
 test('管理员可立即执行其他用户任务且审计保留真实操作者和 override 上下文', async () => {

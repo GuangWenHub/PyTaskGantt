@@ -3,11 +3,14 @@ const {
   createScheduleDirectory,
   createExecutionDetails,
 } = require('./services/yingdaoClient.cjs');
+const { createTodayExecutions } = require('./services/todayExecutions.cjs');
 const { createSyncCoordinator } = require('./services/syncCoordinator.cjs');
 const { createRetentionService } = require('./services/retentionService.cjs');
 const { createTaskMutationService } = require('./services/taskMutationService.cjs');
 const { createTaskActionService } = require('./services/taskActionService.cjs');
 const { createFeishuClient, createFeishuAuthService } = require('./services/feishuAuthService.cjs');
+const { createTaskHistoryService } = require('./services/taskHistoryService.cjs');
+const { createScheduleReconciliation } = require('./services/scheduleReconciliation.cjs');
 
 function appConfig(config, schema) {
   return {
@@ -82,6 +85,8 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
     logger,
   });
 
+  const todayExecutions = createTodayExecutions({ pool, client: yingdaoClient, tasksRepository: repositories.tasks, syncCoordinator, logger });
+
   const retentionService = createRetentionService({
     executionsRepository: repositories.executions,
     retentionDays: config.retention.executionDays,
@@ -89,6 +94,8 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
   });
 
   const taskMutation = createTaskMutationService({ pool, scheduleDirectory });
+  const scheduleReconciliation = createScheduleReconciliation({ client: yingdaoClient, tasksRepository: repositories.tasks, taskMutationService: taskMutation, stateRepository: repositories.planReconciliation, logger });
+  const taskHistory = createTaskHistoryService({ pool, historyRepository: repositories.taskHistory, scheduleDirectory });
   const taskActions = createTaskActionService({
     pool,
     scheduleDirectory,
@@ -107,10 +114,13 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
     appConfig: appConfig(config, schema),
     services: {
       yingdaoClient,
+      todayExecutions,
       scheduleDirectory,
       syncCoordinator,
       retentionService,
       taskMutation,
+      scheduleReconciliation,
+      taskHistory,
       taskActions,
       executionDetails,
       feishuAuth,
@@ -121,6 +131,7 @@ function createRuntime({ config, pool, repositories, schema, logger = console })
       retentionService.start();
     },
     stopBackground() {
+      todayExecutions.stop();
       taskActions.stop();
       syncCoordinator.stop();
       retentionService.stop();

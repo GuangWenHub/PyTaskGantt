@@ -1,9 +1,26 @@
+import { cronTemplateSummary, parseYingdaoCron } from '../../shared/yingdaoCron.mjs'
+import { isSharedTask, candidateNames } from '../../shared/scheduleDispatch.mjs'
 export const DUMMY_DATE = '2025-01-01'
+export const DEFAULT_TIMELINE_WINDOW_MS = 5 * 60 * 60 * 1000
+
+export function getCurrentTimeWindow(now = new Date()) {
+  // 真实日期不能直接放入虚拟排班轴；只将上海时区的时分秒映射到虚拟日期。
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai', hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(now)
+  const clock = Object.fromEntries(parts.map(part => [part.type, part.value]))
+  const center = new Date(`${DUMMY_DATE}T${clock.hour}:${clock.minute}:${clock.second}`)
+  return {
+    start: new Date(center.getTime() - DEFAULT_TIMELINE_WINDOW_MS / 2),
+    end: new Date(center.getTime() + DEFAULT_TIMELINE_WINDOW_MS / 2),
+  }
+}
 
 function timeToMinutes(timeStr) {
   if (!timeStr) return 0
-  const [hour = 0, minute = 0] = String(timeStr).split(':').map(Number)
-  return hour * 60 + minute
+  const [hour = 0, minute = 0, second = 0] = String(timeStr).split(':').map(Number)
+  return hour * 60 + minute + second / 60
 }
 
 export function normalizeTime(value) {
@@ -17,13 +34,9 @@ export function formatDuration(startTime, finishTime) {
   const startMinutes = timeToMinutes(startTime)
   let endMinutes = timeToMinutes(finishTime)
   if (endMinutes < startMinutes) endMinutes += 24 * 60
-  const duration = endMinutes - startMinutes
-  if (duration >= 60) {
-    const hours = Math.floor(duration / 60)
-    const mins = duration % 60
-    return mins ? `${hours}h ${mins}m` : `${hours}h`
-  }
-  return `${duration}m`
+  const total = Math.round((endMinutes - startMinutes) * 60)
+  const hours = Math.floor(total / 3600), mins = Math.floor(total % 3600 / 60), secs = total % 60
+  return [hours && `${hours}h`, mins && `${mins}m`, secs && `${secs}s`].filter(Boolean).join(' ') || '0s'
 }
 
 export function isCrossDay(startTime, finishTime) {
@@ -55,6 +68,7 @@ function hashText(value) {
 }
 
 export function getBotColor(botName) {
+  if (String(botName || '').trim().normalize('NFKC').toLowerCase() === 'bot_1') return '#b7791f'
   const hash = hashText(botName)
   const hue = hash % 360
   const saturation = 62 + ((hash >>> 9) % 18)
@@ -77,11 +91,11 @@ export function createBotColorMap(botNames = []) {
     const hue = Math.round((rotation + (index * 360) / names.length) % 360)
     const saturation = 64 + ((hash >>> 9) % 12)
     const lightness = 39 + ((hash >>> 17) % 5)
-    return [name, `hsl(${hue}, ${saturation}%, ${lightness}%)`]
+    return [name, name.toLowerCase() === 'bot_1' ? getBotColor(name) : `hsl(${hue}, ${saturation}%, ${lightness}%)`]
   }))
 }
 
-// 任务周期 emoji：仅依据 tags 数组（子串匹配），不解析任务名。
+// 循环模式显示 🔁；其他周期依据 tags 数组，不解析任务名。
 // 顺序固定 ☀️→⭐→🌙，不跟随 tags 数组顺序，保证同含义显示一致。
 // 返回 { badge: string, faded: boolean }
 //   badge: emoji 字符串（无匹配返回空串）
@@ -92,7 +106,8 @@ const FREQ_RULES = [
   { match: '每月', emoji: '🌙' },
 ]
 
-export function getTaskFrequencyBadge(tags = []) {
+export function getTaskFrequencyBadge(tags = [], timingMode = 'single') {
+  if (timingMode === 'cron') return { badge: '🔁', faded: false }
   if (!Array.isArray(tags) || !tags.length) return { badge: '', faded: false }
   const joined = tags.map(t => String(t || '').trim()).filter(Boolean)
   if (!joined.length) return { badge: '', faded: false }
@@ -114,12 +129,18 @@ export function getTaskFrequencyBadge(tags = []) {
 }
 
 export function decorateTask(task, color = getBotColor(task.bot)) {
-  const freq = getTaskFrequencyBadge(task.tags)
+  const freq = getTaskFrequencyBadge(task.tags, task.timing_mode)
+  let triggerSeconds = []
+  if (task.timing_mode === 'cron') {
+    try { triggerSeconds = parseYingdaoCron(task.schedule_cron_expression).seconds } catch { /* Wait for a valid remote rule. */ }
+  }
   return {
     ...task,
-    duration: formatDuration(task.start, task.finish),
+    duration: task.timing_mode === 'cron' ? `单次预计 ${task.expected_duration_seconds || 60} 秒` : formatDuration(task.start, task.finish),
+    cronSummary: task.timing_mode === 'cron' ? cronTemplateSummary(task.schedule_cron_expression, task.expected_duration_seconds || 60) : '',
     color,
-    crossDay: isCrossDay(task.start, task.finish),
+    crossDay: task.timing_mode === 'cron' ? triggerSeconds.some(second => second + (task.expected_duration_seconds || 60) >= 86400) : isCrossDay(task.start, task.finish),
+    sortStartMinutes: task.timing_mode === 'cron' ? (triggerSeconds[0] ?? 86400) / 60 : timeToMinutes(task.start),
     freqBadge: freq.badge,
     freqFaded: freq.faded,
   }
@@ -130,23 +151,28 @@ export function filterTasks(tasks, {
   selectedBots = [],
   selectedOwners = [],
   sortBy = 'bot',
+  showSharedTasks = true,
+  showHiddenTasks = true,
+  preserveDecoration = false,
 } = {}) {
   const botColors = createBotColorMap(tasks.map(task => task.bot))
-  let rows = tasks.map(task => decorateTask(task, botColors.get(String(task.bot || '').trim().normalize('NFKC'))))
+  let rows = preserveDecoration ? [...tasks] : tasks.map(task => decorateTask(task, botColors.get(String(task.bot || '').trim().normalize('NFKC'))))
   const term = searchTerm.trim().toLocaleLowerCase('zh-CN')
   if (term) rows = rows.filter(task => task.task.toLocaleLowerCase('zh-CN').includes(term))
-  if (selectedBots.length) rows = rows.filter(task => selectedBots.includes(task.bot))
+  if (!showHiddenTasks) rows = rows.filter(task => !task.is_hidden)
+  if (!showSharedTasks) rows = rows.filter(task => !isSharedTask(task))
+  if (selectedBots.length) rows = rows.filter(task => candidateNames(task).some(bot => selectedBots.includes(bot)))
   if (selectedOwners.length) {
     rows = rows.filter(task => selectedOwners.includes(task.owner?.id || 'legacy'))
   }
   rows.sort((left, right) => {
-    if (sortBy === 'time') return timeToMinutes(left.start) - timeToMinutes(right.start)
+    if (sortBy === 'time') return left.sortStartMinutes - right.sortStartMinutes
     if (sortBy === 'owner') {
       const owner = (left.owner?.display_name || '').localeCompare(right.owner?.display_name || '', 'zh-CN')
       if (owner) return owner
     }
     const bot = left.bot.localeCompare(right.bot, 'zh-CN')
-    return bot || timeToMinutes(left.start) - timeToMinutes(right.start)
+    return bot || left.sortStartMinutes - right.sortStartMinutes
   })
   return rows
 }
@@ -172,6 +198,21 @@ export function formatDateTime(value) {
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
   }).format(date)
+}
+
+export function formatRunDateTime(value) {
+  if (!value) return '—'
+  const text = String(value).trim()
+  // Yingdao's timestamps without an offset are Beijing time, regardless of the browser timezone.
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)
+    ? `${text.replace(' ', 'T')}+08:00` : text
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', weekday: 'long', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map(part => [part.type, part.value]))
+  return `${parts.month}/${parts.day} ${parts.weekday} ${parts.hour}:${parts.minute}:${parts.second}`
 }
 
 export function summarizeSyncCutoff(tasks = []) {

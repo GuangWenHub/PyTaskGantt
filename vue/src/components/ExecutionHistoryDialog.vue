@@ -23,6 +23,7 @@
           </div>
           <p v-if="execution.error_remark" class="execution-error">{{ execution.error_remark }}</p>
           <code>{{ execution.task_uuid }}</code>
+          <p v-if="execution.clients?.length" class="execution-machines">实际执行机器：{{ [...new Set(execution.clients.map(client => client.robotClientName || client.robot_client_name).filter(Boolean))].join('、') || '待确认' }}</p>
 
           <div v-if="jobs[execution.task_uuid]" class="job-list">
             <n-empty v-if="!jobs[execution.task_uuid].length" description="没有应用执行明细" size="small" />

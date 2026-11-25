@@ -165,6 +165,19 @@ DEV_USER_NAMES=用户甲,用户乙 npm run seed:dev
 | `rpa_task_audit_log` | create/update/delete/rebind/transfer/import/run_now 审计 |
 | `app_sessions` | `express-session` 服务端会话 |
 
+本版本新增的表也纳入 PostgreSQL 持久化、备份和运行权限校验：
+
+| 迁移 | 新表或字段 | 用途 |
+|:---|:---|:---|
+| `008` | `rpa_task_operation_history` | 每个任务最近 50 条业务操作历史，含前后快照和记录备注。独立于原始审计表。 |
+| `009` | `rpa_tasks.timing_mode`、`expected_duration_seconds`、`schedule_cron_expression`、`schedule_cron_synced_at`、`schedule_cron_error` | 常规与循环任务、单次预计耗时、影刀 Cron 规则及其同步结果。 |
+| `010` | `rpa_tasks.schedule_dispatch`、`schedule_dispatch_synced_at`、`schedule_dispatch_error` | 候选机器及派发策略缓存、最近同步时间和错误。 |
+| `011` | `rpa_plan_sync_whitelist`、`rpa_plan_scan_snapshots` | 全员共用的任务属性白名单和计划差异扫描快照。 |
+| `012` | `rpa_plan_creation_whitelist` | 按影刀计划 UUID 忽略尚未绑定计划的新增提醒。 |
+| `013` | `rpa_tasks.is_hidden`（`BOOLEAN NOT NULL DEFAULT FALSE`） | 全员共用的隐藏标志，普通轮询和导入导出不会更改已有任务的标志。 |
+
+把预览库切换为实际运行库时，先停止旧写入方，保留现有运行库供回退。复制完整预览库并校验迁移和关键记录后，再更新 `.env`。设置了 `DATABASE_URL` 时应更新其中的数据库名，它优先于 `PGDATABASE`。切换后检查 `/api/health` 及登录后的任务列表。
+
 关键约束：
 
 - `rpa_tasks.id` 和其他内部主键使用 BIGINT；API 以字符串返回 ID，避免 JavaScript 精度丢失。

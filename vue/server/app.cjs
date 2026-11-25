@@ -9,6 +9,8 @@ const { createTasksRouter } = require('./routes/tasks.cjs');
 const { createImportsRouter } = require('./routes/imports.cjs');
 const { createYingdaoRouter } = require('./routes/yingdao.cjs');
 const { createAdminRouter } = require('./routes/admin.cjs');
+const { createTaskHistoryRouter } = require('./routes/taskHistory.cjs');
+const { createScheduleReconciliationRouter } = require('./routes/scheduleReconciliation.cjs');
 const { AuthorizationError } = require('./errors.cjs');
 const { requireSession } = require('./middleware/requireSession.cjs');
 const { requireAllowedOrigin } = require('./middleware/requireAllowedOrigin.cjs');
@@ -87,12 +89,16 @@ function createApp({
     logger,
   }));
   app.use('/api', requireAllowedOrigin(config.corsOrigins || ['*']), requireSession(repositories.users));
+  if (repositories.taskHistory && services.taskHistory) {
+    app.use('/api', createTaskHistoryRouter({ historyRepository: repositories.taskHistory, historyService: services.taskHistory }));
+  }
   app.use('/api', createTasksRouter({
     usersRepository: repositories.users,
     tasksRepository: repositories.tasks,
     taskMutationService: services.taskMutation,
     taskActionService: services.taskActions,
     syncCoordinator: services.syncCoordinator,
+    todayExecutions: services.todayExecutions,
   }));
   app.use('/api', createAdminRouter({
     taskActionService: services.taskActions,
@@ -105,6 +111,7 @@ function createApp({
     scheduleDirectory: services.scheduleDirectory,
     executionDetails: services.executionDetails,
   }));
+  if (services.scheduleReconciliation) app.use('/api', createScheduleReconciliationRouter(services.scheduleReconciliation));
 
   app.use('/api', notFoundHandler);
 

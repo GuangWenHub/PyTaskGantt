@@ -1,18 +1,17 @@
 <template>
-  <n-card title="任务列表" size="small" :bordered="true" class="task-list-card">
-    <template #header-extra><n-text depth="3">共 {{ tasks.length }} 条</n-text></template>
+  <n-card title="任务列表" size="small" :bordered="false" class="task-list-card">
+    <template #header-extra><n-text depth="3">共 {{ taskCount }} 条<span v-if="tasks.length !== taskCount"> · {{ tasks.length }} 个展示条目</span></n-text></template>
     <n-empty v-if="!tasks.length" description="暂无符合条件的任务" class="table-empty" />
     <n-data-table
       v-else
       :columns="columns"
       :data="tasks"
       :pagination="{ pageSize: 10, size: 'small' }"
-      :row-key="row => row.id"
-      :row-class-name="row => row.can_edit ? '' : 'locked-task-row'"
+      :row-key="row => row.view_id || row.id"
+      :row-class-name="row => [row.can_edit ? '' : 'locked-task-row', row.shared_candidate ? 'shared-candidate-row' : '', row._preview_modified ? 'task-preview-row' : ''].join(' ')"
       :scroll-x="1120"
       size="small"
       :bordered="false"
-      :single-line="false"
       striped
     />
   </n-card>
@@ -22,50 +21,60 @@
 import { computed, h } from 'vue'
 import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NTag, NText } from 'naive-ui'
 import { statusType } from '../services/dataService.js'
+import { sourceTask, candidateExecutionText } from '../../shared/scheduleDispatch.mjs'
 
 const props = defineProps({
+  previewOnly: { type: Boolean, default: false },
   tasks: { type: Array, required: true },
   canRecover: { type: Boolean, default: false },
 })
-const emit = defineEmits(['edit', 'delete', 'history', 'run', 'sync', 'rebind', 'transfer', 'recover'])
+const dispatch = defineEmits(['edit', 'delete', 'history', 'run', 'sync', 'rebind', 'transfer', 'recover'])
+const emit = (event, row) => dispatch(event, sourceTask(row))
+const taskCount = computed(() => new Set(props.tasks.map(row => row.id)).size)
 
 const columns = computed(() => [
   {
     title: '任务名称', key: 'task', minWidth: 180, ellipsis: { tooltip: true },
     render(row) {
       return h('div', { class: 'task-name-cell' }, [
+        row._preview_modified ? h(NTag, { size: 'small', type: 'error', bordered: false }, () => '预览调整') : null,
+        candidateExecutionText(row) ? h(NTag, { size: 'small', bordered: false, title: candidateExecutionText(row) }, () => '共享 · 任选1台') : null,
+        row.timing_mode === 'cron' ? h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🔁') : null,
         h('span', row.task),
+        row.timing_mode === 'cron' ? h('small', { title: row.schedule_cron_expression || row.schedule_cron_error || '', style: 'white-space:normal;color:var(--faint)' }, row.cronSummary) : null,
         row.is_legacy_unbound ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '待绑定/只读') : null,
       ])
     },
   },
   {
-    title: '所有者', key: 'owner', width: 120,
-    render: row => h('span', { class: 'owner-cell' }, row.owner?.display_name || '历史任务'),
+    // 渲染纯文本：NaiveUI 的 ellipsis 只对行内文本生效，包一层 inline-flex 会直接截断且没有省略号/提示
+    title: '所有者', key: 'owner', width: 170, ellipsis: { tooltip: true },
+    render: row => row.owner?.display_name || '历史任务',
   },
   {
     title: '开始', key: 'start', width: 88,
-    render: row => h('span', { class: 'time-chip' }, row.start.slice(0, 5)),
+    render: row => h('span', { class: 'time-chip' }, row.timing_mode === 'cron' ? 'Cron' : row.start.slice(0, 5)),
   },
   {
-    title: '结束', key: 'finish', width: 105,
+    title: '结束', key: 'finish', width: 128,
     render(row) {
-      return h(NSpace, { size: 4, wrap: false }, () => [
+      if (row.timing_mode === 'cron') return h('span', { title: row.schedule_cron_expression || '' }, `每次 ${row.expected_duration_seconds} 秒`)
+      return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h('span', { class: 'time-chip' }, row.finish.slice(0, 5)),
         row.crossDay ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '次日') : null,
       ])
     },
   },
   {
-    title: 'Bot', key: 'bot', width: 120,
-    render: row => h(NTag, { size: 'small', bordered: false, color: { color: row.color, textColor: '#fff' } }, () => row.bot),
+    title: 'Bot', key: 'bot', width: 150,
+    render: row => h(NTag, { size: 'small', bordered: false, color: { color: row.color, textColor: '#fff' }, style: 'max-width: 100%' }, () => h('span', { class: 'bot-tag-text', title: row.bot }, row.bot)),
   },
   {
-    title: '状态', key: 'normalized_status', width: 105,
+    title: '状态', key: 'normalized_status', width: 96,
     render: row => h(NTag, { size: 'small', bordered: false, type: statusType(row.normalized_status) }, () => row.normalized_status),
   },
   {
-    title: '操作', key: 'actions', width: 190, fixed: 'right', align: 'center',
+    title: '操作', key: 'actions', width: 176, fixed: 'right', align: 'center',
     render(row) {
       if (!row.can_edit) {
         return h(NSpace, { size: 4, justify: 'center', wrap: false }, () => [
@@ -91,7 +100,7 @@ const columns = computed(() => [
             { label: '同步此任务', key: 'sync' },
             { label: '换绑计划', key: 'rebind' },
             { label: '转交所有权', key: 'transfer' },
-            { label: '删除任务（待保存）', key: 'delete' },
+            { label: props.previewOnly ? '从预览移除' : '删除任务（待保存）', key: 'delete' },
           ],
           onSelect(key) {
             if (key === 'delete') emit('delete', row)

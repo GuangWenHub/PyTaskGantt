@@ -2,14 +2,8 @@
   <n-layout class="app-layout">
     <n-layout-header bordered class="app-header">
       <router-link class="header-logo" to="/schedule" aria-label="任务看板首页">
-        <span class="header-logo-icon" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="3" width="8" height="2.2" rx="1" fill="currentColor" />
-            <rect x="5" y="7" width="9" height="2.2" rx="1" fill="currentColor" opacity=".85" />
-            <rect x="3" y="11" width="7" height="2.2" rx="1" fill="currentColor" opacity=".7" />
-          </svg>
-        </span>
-        <span>
+        <img class="header-logo-mark" :src="'/brand/kocotree-mark.svg'" alt="KOCOTREE" width="32" height="32" />
+        <span class="header-logo-text">
           <strong class="header-title">RPA 任务看板</strong>
           <small class="header-subtitle">排班沙盘与运行状态</small>
         </span>
@@ -28,7 +22,7 @@
           <template v-if="!auth.user?.avatar_url">{{ initials }}</template>
           <template #fallback>{{ initials }}</template>
         </n-avatar>
-        <span class="header-user-name">{{ auth.user?.display_name || '当前用户' }}</span>
+        <span class="header-user-name" :title="auth.user?.display_name || ''">{{ auth.user?.display_name || '当前用户' }}</span>
         <n-tag v-if="auth.user?.is_admin" size="small" type="error" :bordered="false">管理员</n-tag>
         <n-button
           v-if="auth.feishuEnabled && !auth.user?.feishu_bound"
@@ -45,17 +39,20 @@
     </n-layout-content>
 
     <n-layout-footer bordered class="app-footer">
-      PyTaskGantt · RPA 任务排班与执行看板
+      KOCOTREE · RPA 任务排班与执行看板
     </n-layout-footer>
   </n-layout>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
+import { planSyncStore } from '../stores/planSyncStore.js'
 import { useRoute, useRouter } from 'vue-router'
 import { NAvatar, NButton, NLayout, NLayoutContent, NLayoutFooter, NLayoutHeader, NTag } from 'naive-ui'
 import { auth, feishuAuthorizationUrl, logout } from '../services/authService.js'
 import { hasAnyUnsavedTasks, resetAllTaskStores } from '../stores/taskDraftStore.js'
+
+watch(() => auth.user?.id, id => planSyncStore.connectUser(id), { immediate: true })
 
 const router = useRouter()
 const route = useRoute()
