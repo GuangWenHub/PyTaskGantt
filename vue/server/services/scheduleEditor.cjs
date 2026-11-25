@@ -1,6 +1,13 @@
 const { scheduleAutofill } = require('../../shared/scheduleAutofill.mjs');
 const { normalizeScheduleDispatch } = require('../../shared/scheduleDispatch.mjs');
 const { NotFoundError } = require('../errors.cjs');
+const { normalizeExecutionStatus } = require('./executionStatus.cjs');
+
+function limitSeconds(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const seconds = Number(value);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : null;
+}
 
 async function getEditorPlan(client, uuid) {
   const result = await client.getScheduleDetail(uuid);
@@ -14,6 +21,14 @@ async function getEditorPlan(client, uuid) {
   return {
     schedule_uuid: uuid, schedule_name: String(plan.scheduleName || ''),
     dispatch: normalizeScheduleDispatch(plan), defaults, rule_error: ruleError,
+    timeout_limits: {
+      wait_seconds: plan.enableWaitTimeout === false || plan.waitTimeoutSettings?.enableWaitTimeout === false
+        ? null : limitSeconds(plan.waitTimeoutSettings?.waitTimeout),
+      execution: (Array.isArray(plan.robotList) ? plan.robotList : []).map(robot => ({
+        name: String(robot?.robotName || robot?.appName || ''),
+        seconds: robot?.enableRunTimeout === false ? null : limitSeconds(robot?.runTimeoutSettings?.runTimeout),
+      })),
+    },
     stale: Boolean(result.cache?.stale), fetched_at: result.cache?.fetchedAt || null,
   };
 }
@@ -38,10 +53,10 @@ function retryMarked(record) {
     || ['retryCount', 'retryTimes'].some(key => Number(record?.[key]) > 0)
     || record?.isRetry === true || record?.retried === true;
 }
-async function eligibleRun(client, uuid, row, onFailure) {
+async function eligibleRun(client, uuid, row, onFailure, readDetail) {
   if (!successful(row) || retryMarked(row)) return null;
   try {
-    const detail = (await client.queryTask(row.taskUuid)).execution;
+    const detail = (await readDetail()).execution;
     if (!successful(detail) || retryMarked(detail) || (detail.taskUuid && String(detail.taskUuid) !== String(row.taskUuid))) return null;
     const detailJobs = detail.jobDataList;
     if (!Array.isArray(detailJobs) || !detailJobs.length || detailJobs.some(job => !successful(job) || retryMarked(job))) return null;
@@ -75,8 +90,21 @@ async function eligibleRun(client, uuid, row, onFailure) {
   } catch { onFailure(); return null; } // Transport failures are distinct from ineligible executions.
 }
 
+function summarizeLatestRun(row) {
+  const elapsed = (timestamp(row.endTime) - timestamp(row.startTime)) / 1000;
+  return {
+    task_uuid: String(row.taskUuid),
+    normalized_status: normalizeExecutionStatus(row),
+    trigger_time: row.triggerTime || row.createTime || null,
+    start_time: row.startTime || null,
+    end_time: row.endTime || null,
+    duration_seconds: Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null,
+  };
+}
+
 async function getRecentRuns(client, uuid) {
   const records = [], seen = new Set(), cursors = new Set(), collectedTimes = [];
+  let latestRun = null, latestDetail = null, latestUpdate = null;
   let cursorId, inspected = 0, more = false, verificationFailed = 0;
   // Bounded search, independent of the unbounded execution-history synchronizer.
   for (let page = 0; page < 10 && records.length < 10 && inspected < 200; page++) {
@@ -86,21 +114,49 @@ async function getRecentRuns(client, uuid) {
     if (result.fetched_at) collectedTimes.push(result.fetched_at);
     const candidates = result.items.filter(row => row.taskUuid && !seen.has(String(row.taskUuid))
       && (!row.sourceUuid || String(row.sourceUuid) === String(uuid))).filter(row => { seen.add(String(row.taskUuid)); return true; });
+    if (!latestRun && candidates.length) {
+      // The cursor starts at the newest execution. Keep it even if it is excluded from statistics.
+      const row = candidates[0];
+      latestRun = summarizeLatestRun(row);
+      if (latestRun.duration_seconds === null && typeof client.queryTask === 'function') {
+        latestDetail = Promise.resolve().then(async () => {
+          const response = await client.queryTask(row.taskUuid);
+          const detail = response.execution;
+          if (!detail || (detail.taskUuid && String(detail.taskUuid) !== String(row.taskUuid))
+            || (detail.sourceUuid && String(detail.sourceUuid) !== String(uuid))) {
+            throw new Error('Execution detail does not match the latest run');
+          }
+          return response;
+        });
+        // An unavailable detail leaves the list summary intact.
+        latestUpdate = latestDetail.then(({ execution: detail }) => {
+          latestRun = summarizeLatestRun({
+            ...row,
+            startTime: Number.isFinite(timestamp(detail.startTime)) ? detail.startTime : row.startTime,
+            endTime: Number.isFinite(timestamp(detail.endTime)) ? detail.endTime : row.endTime,
+          });
+        }, () => {});
+      }
+    }
     for (let i = 0; i < candidates.length && records.length < 10 && inspected < 200;) {
       const batch = candidates.slice(i, i + Math.min(2, 10 - records.length, 200 - inspected));
       i += batch.length;
       inspected += batch.length;
-      records.push(...(await Promise.all(batch.map(row => eligibleRun(client, uuid, row, () => { verificationFailed++; })))).filter(Boolean));
+      records.push(...(await Promise.all(batch.map(row => eligibleRun(client, uuid, row,
+        () => { verificationFailed++; },
+        () => latestDetail && String(row.taskUuid) === latestRun.task_uuid ? latestDetail : client.queryTask(row.taskUuid),
+      )))).filter(Boolean));
     }
     more = Boolean(result.hasMore);
     if (!more || !result.nextCursor || cursors.has(String(result.nextCursor))) break;
     cursorId = String(result.nextCursor); cursors.add(cursorId);
   }
+  if (latestUpdate) await latestUpdate;
   const samples = records;
   const average = samples.length ? samples.reduce((sum, row) => sum + row.duration_seconds, 0) / samples.length : null;
   const maximum = samples.length ? Math.max(...samples.map(row => row.duration_seconds)) : null;
   const minimum = samples.length ? Math.min(...samples.map(row => row.duration_seconds)) : null;
-  return { records, fetched_at: collectedTimes.sort()[0] || new Date().toISOString(), completed_at: new Date().toISOString(), sample_count: samples.length, inspected_count: inspected, skipped_count: inspected - records.length - verificationFailed,
+  return { records, latest_run: latestRun, fetched_at: collectedTimes.sort()[0] || new Date().toISOString(), completed_at: new Date().toISOString(), sample_count: samples.length, inspected_count: inspected, skipped_count: inspected - records.length - verificationFailed,
     verification_failed_count: verificationFailed, incomplete: verificationFailed > 0,
     search_limit_reached: records.length < 10 && more, average_duration_seconds: average,
     max_duration_seconds: maximum, min_duration_seconds: minimum,

@@ -26,6 +26,21 @@ test('计划元数据只返回白名单字段，不泄露应用参数；错误�
   await assert.rejects(() => getEditorPlan(client, 'b'), { status: 404 });
 });
 
+test('计划等待时限和每个应用的执行时限以秒返回，关闭的时限不显示旧值', async () => {
+  const client = { getScheduleDetail: async () => ({ schedule: {
+    scheduleUuid: 'a',
+    waitTimeoutSettings: { waitTimeoutMin: 10, waitTimeout: 600 },
+    robotList: [
+      { robotName: '应用甲', enableRunTimeout: true, runTimeoutSettings: { runTimeout: '23700' } },
+      { robotName: '应用乙', enableRunTimeout: false, runTimeoutSettings: { runTimeout: 60 } },
+    ],
+  } }) };
+  const result = await getEditorPlan(client, 'a');
+  assert.deepEqual(result.timeout_limits, { wait_seconds: 600, execution: [
+    { name: '应用甲', seconds: 23700 }, { name: '应用乙', seconds: null },
+  ] });
+});
+
 test('兼容单页读取过滤其他计划，新分页入口传递服务端游标并限制页大小', async () => {
   const client = createYingdaoClient({ accessKeyId: 'test', accessKeySecret: 'test' });
   let calls = 0;
@@ -75,6 +90,32 @@ test('仅无重试且无异常的成功记录参与统计，失败、重试成�
   assert.equal(result.records[1].duration_seconds, 121);
   assert.equal(result.skipped_count, 7);
   assert.equal(JSON.stringify(result).includes('never-return'), false);
+});
+
+test('首次候选即使已停止，也独立显示为最近一次，不纳入成功样本', async () => {
+  const result = await getRecentRuns({
+    listRecentTaskPage: async () => ({
+      items: [{ taskUuid: 'stopped-run', status: 'stop', createTime: '2026-11-04 23:59:00' }],
+      hasMore: false,
+    }),
+    queryTask: async id => ({ execution: detail(id, { status: 'stop' }) }),
+  }, 'a');
+  assert.equal(result.latest_run.task_uuid, 'stopped-run');
+  assert.equal(result.latest_run.normalized_status, '已停止');
+  assert.equal(result.latest_run.duration_seconds, 61);
+  assert.deepEqual(result.records, []);
+});
+
+test('最近一次成功运行与成功统计复用同一条详情请求', async () => {
+  const calls = [];
+  const result = await getRecentRuns({
+    listRecentTasks: async () => [{ taskUuid: '1', status: 'finish' }],
+    queryTask: async id => { calls.push(id); return { execution: detail(id) }; },
+    getTaskProcessDetail: async id => ({ jobs: [processJob(id)] }),
+  }, 'a');
+  assert.deepEqual(calls, ['1']);
+  assert.equal(result.latest_run.duration_seconds, 61);
+  assert.equal(result.records[0].duration_seconds, 61);
 });
 
 test('向前分页补足十次，最后一个样本之前遇到失败仍不能漏过紧接着的合格记录', async () => {

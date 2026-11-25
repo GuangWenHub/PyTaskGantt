@@ -8,6 +8,9 @@ function normalizeTags(value, csv = false) {
 }
 
 function normalizeImportedTask(raw, index, csv = false) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ValidationError(`导入第 ${index + 1} 条记录必须是任务对象`);
+  }
   const task = {
     task: String(raw.task ?? raw.Task ?? '').trim(),
     start: String(raw.start ?? raw.Start ?? '').trim(),
@@ -26,17 +29,17 @@ function normalizeImportedTask(raw, index, csv = false) {
   return task;
 }
 
-function parseTaskImport(content, format) {
+function readImportRows(content, format) {
   if (typeof content !== 'string' || !content.trim()) throw new ValidationError('没有提供文件内容');
   if (format === 'json') {
     let rows;
     try {
-      rows = JSON.parse(content);
+      rows = JSON.parse(content.replace(/^\uFEFF/, ''));
     } catch (_error) {
       throw new ValidationError('JSON 内容无法解析');
     }
     if (!Array.isArray(rows)) throw new ValidationError('JSON 顶层必须是任务数组');
-    return rows.map((row, index) => normalizeImportedTask(row, index, false));
+    return rows;
   }
   let rows;
   try {
@@ -44,7 +47,11 @@ function parseTaskImport(content, format) {
   } catch (error) {
     throw new ValidationError(`CSV 内容无法解析：${error.message}`);
   }
-  return rows.map((row, index) => normalizeImportedTask(row, index, true));
+  return rows;
+}
+
+function parseTaskImport(content, format) {
+  return readImportRows(content, format).map((row, index) => normalizeImportedTask(row, index, format === 'csv'));
 }
 
 function exportTasks(tasks, format) {
@@ -66,4 +73,4 @@ function exportTasks(tasks, format) {
   return { contentType: 'text/csv; charset=utf-8', body: stringify(rows, { header: true, bom: true }) };
 }
 
-module.exports = { normalizeTags, parseTaskImport, exportTasks };
+module.exports = { normalizeTags, readImportRows, normalizeImportedTask, parseTaskImport, exportTasks };

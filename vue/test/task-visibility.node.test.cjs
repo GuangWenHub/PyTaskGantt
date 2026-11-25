@@ -15,7 +15,7 @@ function fixture(rows) {
 }
 test('隐藏名单按事务锁行、审计，只更新展示字段，不修改排班和版本', async () => {
   const f = fixture([{ id: '1', is_hidden: false }]);
-  await f.repository.setVisibility({ userId: '2', isAdmin: false }, [{ id: '1', expected_hidden: false, is_hidden: true }]);
+  await f.repository.setVisibility({ userId: '2', isAdmin: true }, [{ id: '1', expected_hidden: false, is_hidden: true }]);
   const update = f.calls.find(call => call.sql.startsWith('UPDATE'));
   assert.equal(update.sql, 'UPDATE public.rpa_tasks SET is_hidden=$2 WHERE id=$1');
   assert.deepEqual(update.params, ['1', true]);
@@ -32,7 +32,7 @@ test('隐藏名单按事务锁行、审计，只更新展示字段，不修改�
 test('任一任务冲突或已删除时整批拒绝，不产生部分写入', async () => {
   for (const rows of [[{ id: '1', is_hidden: true }, { id: '2', is_hidden: false }], [{ id: '1', is_hidden: false }]]) {
     const f = fixture(rows);
-    await assert.rejects(() => f.repository.setVisibility({ userId: '1' }, ['1', '2'].map(id => ({ id, expected_hidden: false, is_hidden: true }))));
+    await assert.rejects(() => f.repository.setVisibility({ userId: '1', isAdmin: true }, ['1', '2'].map(id => ({ id, expected_hidden: false, is_hidden: true }))));
     assert(f.calls.some(call => call.sql === 'ROLLBACK'));
     assert(!f.calls.some(call => call.sql.startsWith('UPDATE')));
   }
@@ -40,4 +40,10 @@ test('任一任务冲突或已删除时整批拒绝，不产生部分写入', as
 test('隐藏标志穿过数据库映射与API呈现，旧数据默认false', () => {
   assert.equal(presentTask(mapTaskRow({ id: '1', is_hidden: true })).is_hidden, true);
   assert.equal(presentTask(mapTaskRow({ id: '1' })).is_hidden, false);
+});
+
+test('普通用户即使任务所有者也不能直接改隐藏名单，拒绝前不访问数据库', async () => {
+  const f = fixture([{ id: '1', is_hidden: false }]);
+  await assert.rejects(f.repository.setVisibility({ userId: '1', isAdmin: false }, [{ id: '1', expected_hidden: false, is_hidden: true }]), { code: 'ADMIN_REQUIRED' });
+  assert.equal(f.calls.length, 0);
 });

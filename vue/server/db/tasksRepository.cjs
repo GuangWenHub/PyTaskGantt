@@ -510,7 +510,8 @@ function createTasksRepository(db) {
 
 
   async function setVisibility(actor, changes) {
-    const { ConflictError, NotFoundError } = require('../errors.cjs');
+    const { ConflictError, NotFoundError, AdminRequiredError } = require('../errors.cjs');
+    if (!actor.isAdmin) throw new AdminRequiredError('仅管理员可修改隐藏任务名单');
     const { addAudit } = require('../services/taskMutationService.cjs');
     await withTransaction(db, async client => {
       const ids = changes.map(change => change.id);

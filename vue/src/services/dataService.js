@@ -200,6 +200,21 @@ export function formatDateTime(value) {
   }).format(date)
 }
 
+export function formatRunDateTime(value) {
+  if (!value) return '—'
+  const text = String(value).trim()
+  // Yingdao's timestamps without an offset are Beijing time, regardless of the browser timezone.
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)
+    ? `${text.replace(' ', 'T')}+08:00` : text
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', weekday: 'long', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map(part => [part.type, part.value]))
+  return `${parts.month}/${parts.day} ${parts.weekday} ${parts.hour}:${parts.minute}:${parts.second}`
+}
+
 export function summarizeSyncCutoff(tasks = []) {
   const boundTasks = (Array.isArray(tasks) ? tasks : []).filter(task => task?.schedule_uuid)
   const timestamps = boundTasks

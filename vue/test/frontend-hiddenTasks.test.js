@@ -92,8 +92,18 @@ describe('隐藏任务设置', () => {
     wrapper.unmount()
   })
 
+  it('普通用户可以查看名单和切换显示，不能新增、移出或保存名单', async () => {
+    const wrapper = mount(HiddenTasksDialog, { props: { show: true, tasks, canManageHidden: false } })
+    await wrapper.get('[aria-label="显示隐藏任务"]').trigger('click')
+    expect(wrapper.emitted('update:showHiddenTasks')).toEqual([[true]])
+    await button(wrapper, '查看名单').trigger('click')
+    expect(wrapper.findAll('.hidden-task-name').map(row => row.text())).toEqual(['普通任务甲'])
+    for (const label of ['添加', '移出名单', '保存名单']) expect(button(wrapper, label)).toBeUndefined()
+    expect(wrapper.emitted('save')).toBeUndefined()
+    wrapper.unmount()
+  })
   it('先显示名单，添加时分类、搜索和选择；保存只提交实际变化', async () => {
-    const wrapper = mount(HiddenTasksDialog, { props: { show: true, tasks } })
+    const wrapper = mount(HiddenTasksDialog, { props: { show: true, tasks, canManageHidden: true } })
     expect(wrapper.find('.hidden-task-rows').exists()).toBe(false)
     expect(wrapper.text()).toContain('用竖线标记当前北京时间，随时间自动更新；默认关闭。')
     const setting = wrapper.findAll('.task-name-setting').find(row => row.find('[aria-label="显示隐藏任务"]').exists())

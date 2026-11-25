@@ -7,11 +7,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const pageState = vi.hoisted(() => ({
   auth: { user: { id: '7', display_name: '管理员', is_admin: true }, uiRefreshSeconds: 60 },
   load: vi.fn(async () => []),
+  syncAllTasks: vi.fn(async () => ({})),
   preview: false,
   success: vi.fn(),
   info: vi.fn(),
   addTask: vi.fn(),
   saveTaskMutations: vi.fn(),
+  confirm: vi.fn(),
+  savedTasks: {},
+  rebindTask: vi.fn(),
   recoverTask: vi.fn(async () => ({ success: true })),
   slotStub: { template: '<div><slot /></div>' },
   task: {
@@ -37,17 +41,18 @@ vi.mock('../src/services/taskService.js', () => ({
   saveTaskMutations: pageState.saveTaskMutations,
   getUsers: vi.fn(async () => [{ id: '8', display_name: '目标用户' }]),
   importTasks: vi.fn(),
-  rebindTask: vi.fn(),
+  rebindTask: pageState.rebindTask,
   recoverTask: pageState.recoverTask,
   runTask: vi.fn(),
   syncTask: vi.fn(),
+  syncAllTasks: pageState.syncAllTasks,
   transferTask: vi.fn(),
 }))
 vi.mock('../src/stores/taskDraftStore.js', () => ({
   myTaskStore: { isDirty: () => false, state: { loaded: false } },
   hasAnyTaskSaveInProgress: () => false,
   scheduleTaskStore: {
-    state: { loading: false, saving: false, error: '' },
+    state: { loading: false, saving: false, error: '', savedTasks: pageState.savedTasks },
     tasks: { value: [pageState.task] },
     hasUnsaved: { value: false },
     hasPreviews: { get value() { return pageState.preview } },
@@ -77,7 +82,7 @@ vi.mock('../src/components/GanttChart.vue', () => ({
   default: { name: 'GanttChart', template: '<div />' },
 }))
 vi.mock('../src/components/TaskEditor.vue', () => ({
-  default: { name: 'TaskEditor', props: ['show', 'saving', 'mode'], template: '<div />' },
+  default: { name: 'TaskEditor', props: ['show', 'saving', 'mode', 'task'], template: '<div />' },
 }))
 vi.mock('../src/components/TaskList.vue', () => ({
   default: {
@@ -116,13 +121,37 @@ vi.mock('naive-ui', () => ({
   NSpace: pageState.slotStub,
   NSpin: pageState.slotStub,
   NTag: pageState.slotStub,
-  useDialog: () => ({ warning: vi.fn() }),
+  useDialog: () => ({ warning: pageState.confirm }),
   useMessage: () => ({ error: vi.fn(), info: pageState.info, success: pageState.success, warning: vi.fn() }),
 }))
 
 import SchedulePage from '../src/pages/SchedulePage.vue'
 
 describe('SchedulePage administrator recovery', () => {
+  it('编辑窗口换绑复用现有确认流程，成功后保留编辑框并显示新绑定版本', async () => {
+    const original = { ...pageState.task }
+    Object.assign(pageState.task, { can_edit: true, schedule_uuid: 'old-plan' })
+    const updated = { ...pageState.task, schedule_uuid: 'schedule-recovered', version: 4 }
+    pageState.rebindTask.mockResolvedValue({ success: true, task: updated })
+    const wrapper = mount(SchedulePage)
+    try {
+      await flushPromises()
+      wrapper.findComponent({ name: 'TaskList' }).vm.$emit('edit', pageState.task)
+      await nextTick()
+      const editor = wrapper.findComponent({ name: 'TaskEditor' })
+      editor.vm.$emit('rebind', editor.props('task'))
+      await nextTick()
+      await wrapper.get('.schedule-choice').trigger('click')
+      await nextTick()
+      await wrapper.findAll('button').find(button => button.text() === '确认换绑').trigger('click')
+      await flushPromises()
+      expect(pageState.rebindTask).toHaveBeenCalledWith('10', 'schedule-recovered', 3)
+      expect(editor.props('show')).toBe(true)
+      // The stub store still has the old binding: it must not overwrite the new API response.
+      expect(editor.props('task')).toMatchObject({ schedule_uuid: 'schedule-recovered', version: 4 })
+    } finally { wrapper.unmount(); Object.keys(pageState.task).forEach(key => delete pageState.task[key]); Object.assign(pageState.task, original) }
+  })
+
   it('编辑本地保存只提交当前任务差异与原版本，不夹带其他预览或缓存字段', async () => {
     const original = { ...pageState.task }
     Object.assign(pageState.task, { can_edit: true, schedule_uuid: 'bound-plan', timing_mode: 'single', expected_duration_seconds: 60, schedule_dispatch: {}, schedule_cron_expression: '' })
@@ -213,7 +242,9 @@ describe('SchedulePage administrator recovery', () => {
   })
 
   beforeEach(() => {
+    pageState.syncAllTasks.mockClear()
     pageState.auth.user.is_admin = true
+    pageState.rebindTask.mockReset()
     pageState.recoverTask.mockClear()
     pageState.load.mockClear()
     pageState.preview = false
@@ -221,6 +252,54 @@ describe('SchedulePage administrator recovery', () => {
     pageState.info.mockClear()
     pageState.addTask.mockClear()
     pageState.saveTaskMutations.mockReset()
+  })
+
+  it('人工处置复用任务编辑，删除在确认后按当前绑定版本写入本地', async () => {
+    const task = { ...pageState.task, schedule_uuid: 'old-plan', can_edit: true, is_legacy_unbound: false }
+    const row = { task_id: task.id, schedule_uuid: task.schedule_uuid, can_apply: false, kind: 'error' }
+    pageState.savedTasks[task.id] = task
+    pageState.confirm.mockClear()
+    pageState.saveTaskMutations.mockResolvedValue({})
+    const wrapper = mount(SchedulePage)
+    try {
+      await flushPromises()
+      const sync = wrapper.findComponent({ name: 'ScheduleReconciliationDialog' })
+      const editor = wrapper.findComponent({ name: 'TaskEditor' })
+      sync.vm.$emit('edit-local', row)
+      await nextTick()
+      expect(editor.props('show')).toBe(true)
+      expect(editor.props('task').schedule_uuid).toBe(task.schedule_uuid)
+      editor.vm.$emit('update:show', false)
+      await nextTick()
+      expect(sync.props('show')).toBe(true)
+      sync.vm.$emit('delete-local', { ...row, schedule_uuid: 'obsolete' })
+      expect(pageState.confirm).not.toHaveBeenCalled()
+      sync.vm.$emit('delete-local', row)
+      expect(pageState.saveTaskMutations).not.toHaveBeenCalled()
+      await pageState.confirm.mock.lastCall[0].onPositiveClick()
+      expect(pageState.saveTaskMutations).toHaveBeenCalledWith([{ type: 'delete', id: task.id, version: task.version }])
+      expect(pageState.load).toHaveBeenLastCalledWith({ preserveDraft: true, silent: false })
+    } finally {
+      delete pageState.savedTasks[task.id]
+      wrapper.unmount()
+    }
+  })
+
+  it('打开页面和点击刷新均同步影刀，重复点击共用进行中的刷新', async () => {
+    const wrapper = mount(SchedulePage)
+    await flushPromises()
+    expect(pageState.syncAllTasks).toHaveBeenCalledTimes(1)
+    let complete
+    pageState.syncAllTasks.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    const filters = wrapper.findComponent({ name: 'FilterPanel' })
+    filters.vm.$emit('refresh')
+    filters.vm.$emit('refresh')
+    expect(pageState.syncAllTasks).toHaveBeenCalledTimes(2)
+    complete()
+    await flushPromises()
+    expect(pageState.load).toHaveBeenLastCalledWith({ preserveDraft: false })
+    expect(pageState.success).toHaveBeenCalledWith('影刀数据已同步并刷新')
+    wrapper.unmount()
   })
 
   it('管理员看到恢复入口并提交目标用户、计划和乐观锁版本', async () => {

@@ -1,7 +1,7 @@
 const request = require('supertest');
 const session = require('express-session');
 const { createApp } = require('../server/app.cjs');
-test('共享隐藏名单仍要求登录、允许来源及严格参数，普通账号仅能调整展示字段', async () => {
+test('隐藏名单只允许管理员修改，普通账号不能伪造权限且角色变化即时生效', async () => {
   const user = { id: '2', auth_provider: 'dev', display_name: '用户', is_admin: false };
   const calls = [];
   const app = createApp({ config: { authMode: 'dev', corsOrigins: ['http://localhost:5174'], sessionSecret: 'visibility-test-secret', sessionMaxAgeSeconds: 3600 },
@@ -14,10 +14,13 @@ test('共享隐藏名单仍要求登录、允许来源及严格参数，普通�
   const agent = request.agent(app);
   await agent.post('/api/auth/dev/switch').set('Origin', 'http://localhost:5174').send({ user_id: '2' }).expect(200);
   await agent.patch('/api/tasks/visibility').set('Origin', 'http://untrusted.test').send(payload).expect(403);
+  await agent.patch('/api/tasks/visibility').set('Origin', 'http://localhost:5174').send({ ...payload, isAdmin: true }).expect(403);
+  expect(calls).toEqual([]);
+  user.is_admin = true;
   for (const body of [{ changes: [] }, { changes: [...payload.changes, ...payload.changes] }, { changes: [{ ...payload.changes[0], bot: 'forbidden' }] }, { changes: [{ ...payload.changes[0], id: '9223372036854775808' }] }, { changes: [{ id: '1', is_hidden: true }] }]) {
     await agent.patch('/api/tasks/visibility').set('Origin', 'http://localhost:5174').send(body).expect(400);
   }
   const response = await agent.patch('/api/tasks/visibility').set('Origin', 'http://localhost:5174').send(payload).expect(200);
-  expect(calls).toEqual([{ actor: { userId: '2', isAdmin: false }, changes: payload.changes }]);
+  expect(calls).toEqual([{ actor: { userId: '2', isAdmin: true }, changes: payload.changes }]);
   expect(response.body.tasks[0].is_hidden).toBe(true);
 });

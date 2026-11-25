@@ -10,9 +10,7 @@ export function formatDisabledRunStatus(snapshot = {}) {
   return cached
 }
 export function formatTodayRunStatus(payload = {}, hasTasks = true) {
-  if (payload.monitor?.paused) return '今日定时运行状态 · 网页未激活，已暂停核对'
   if (payload.error) return payload.error
-  if (payload.monitor?.waiting) return `今日定时运行状态 · 下次核对 ${new Date(payload.monitor.next_check_at).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`
   if (!hasTasks) return '暂无符合条件的任务'
   if (!payload.date) return '正在读取今日运行记录…'
   const metadata = payload.tasks || []
@@ -34,25 +32,36 @@ export function useRunStatusPreference() {
 export function useTodayRunStatus(enabled, tasks) {
   const data = shallowRef({}), error = ref('')
   let timer = null, midnightTimer = null, controller = null, generation = 0
-  let windowFocused = document.hasFocus(), nextCheckAt = 0, initialized = false, forcePending = true, waiting = false
+  let requestTimeout = null
+  let nextCheckAt = 0, forcePending = true
   let day = shanghaiDay()
   const successful = new Set()
   const ids = () => [...new Set(tasks.value.filter(task => /^[1-9]\d*$/.test(String(task.id)) && task.schedule_uuid).map(task => String(task.id)))].sort()
-  const active = () => document.visibilityState === 'visible' && windowFocused
   const bindingKey = task => `${day}:${task.id}:${task.schedule_uuid}:${task.schedule_bound_at}`
   function shanghaiDay() { return new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10) }
   function updateDay() {
     const current = shanghaiDay()
-    if (current !== day) { day = current; successful.clear(); forcePending = true }
+    if (current === day) return false
+    day = current
+    successful.clear()
+    forcePending = true
+    return true
   }
   function stopped(id) { const task = tasks.value.find(task => String(task.id) === id); return task && successful.has(bindingKey(task)) }
   function publish(payload = data.value) {
-    data.value = { ...payload, monitor: { paused: enabled.value && !active(), waiting, next_check_at: nextCheckAt, stopped_success_count: ids().filter(stopped).length } }
+    data.value = { ...payload, monitor: { stopped_success_count: ids().filter(stopped).length } }
   }
-  function cancel() { generation++; clearTimeout(timer); clearTimeout(midnightTimer); controller?.abort(); timer = null; midnightTimer = null }
+  function cancel() {
+    generation++
+    clearTimeout(timer)
+    clearTimeout(midnightTimer)
+    clearTimeout(requestTimeout)
+    controller?.abort()
+    timer = midnightTimer = requestTimeout = controller = null
+  }
   function schedule() {
     clearTimeout(timer); clearTimeout(midnightTimer)
-    if (!enabled.value || !active()) return
+    if (!enabled.value) return
     const loading = data.value.tasks?.some(task => task.state === 'loading')
     if (loading || ids().some(id => !stopped(id))) {
       const due = Math.max(0, nextCheckAt - Date.now())
@@ -62,15 +71,23 @@ export function useTodayRunStatus(enabled, tasks) {
     midnightTimer = setTimeout(() => { updateDay(); nextCheckAt = Date.now(); void refresh('force', generation) }, Math.max(50, tomorrow - Date.now()))
   }
   async function refresh(mode, token) {
-    if (!enabled.value || !active() || token !== generation) return
-    updateDay()
+    if (!enabled.value || token !== generation || controller) return
+    if (updateDay()) mode = 'force'
     const all = ids(), refreshIds = mode === 'force' ? all : mode === 'due' ? all.filter(id => !stopped(id)) : []
     if (!all.length) { data.value = {}; error.value = ''; schedule(); return }
     if (mode !== 'cache' && !refreshIds.length) { schedule(); return }
-    if (mode !== 'cache') { nextCheckAt = Date.now() + 60000; waiting = false }
-    controller = new AbortController()
+    clearTimeout(timer)
+    clearTimeout(midnightTimer)
+    if (mode !== 'cache') nextCheckAt = Date.now() + 60000
+    const request = new AbortController()
+    controller = request
+    let timedOut = false
+    requestTimeout = setTimeout(() => {
+      timedOut = true
+      request.abort()
+    }, 15000)
     try {
-      const payload = await apiRequest(`/tasks/today-executions${toQuery({ task_ids: all.join(','), refresh: mode, ...(refreshIds.length ? { refresh_ids: refreshIds.join(',') } : {}) })}`, { signal: controller.signal })
+      const payload = await apiRequest(`/tasks/today-executions${toQuery({ task_ids: all.join(','), refresh: mode, ...(refreshIds.length ? { refresh_ids: refreshIds.join(',') } : {}) })}`, { signal: request.signal })
       if (token !== generation) return
       if (mode === 'force') forcePending = false
       // A successful cached record cannot stop a newly requested check while its metadata is still loading/error.
@@ -80,28 +97,47 @@ export function useTodayRunStatus(enabled, tasks) {
           && String(metadata.schedule_bound_at) === String(task.schedule_bound_at)
           && payload.records?.some(row => String(row.task_id) === String(task.id) && row.schedule_uuid === task.schedule_uuid && row.status === '运行成功')) successful.add(bindingKey(task))
       }
-      if (ids().every(stopped)) waiting = false
       publish(payload); error.value = ''
     } catch (failure) {
-      if (token === generation && failure.name !== 'AbortError') { error.value = failure.message; publish({ ...data.value, error: failure.message }) }
-    } finally { if (token === generation) schedule() }
+      if (token === generation && (timedOut || failure.name !== 'AbortError')) {
+        error.value = timedOut ? '读取今日运行记录超时，稍后自动重试' : failure.message
+        publish({ ...data.value, error: error.value })
+      }
+    } finally {
+      if (token === generation) {
+        clearTimeout(requestTimeout)
+        requestTimeout = controller = null
+        schedule()
+      }
+    }
   }
-  function resume() {
-    cancel(); updateDay(); waiting = ids().some(id => !stopped(id)) || Boolean(data.value.tasks?.some(task => task.state === 'loading')); nextCheckAt = Date.now() + 60000; publish(); schedule()
+  function catchUp() {
+    if (!enabled.value || document.visibilityState !== 'visible' || controller) return
+    if (shanghaiDay() !== day) void refresh('force', generation)
+    else if (Date.now() >= nextCheckAt && ids().some(id => !stopped(id))) {
+      void refresh(forcePending ? 'force' : 'due', generation)
+    }
   }
-  function focus() { windowFocused = true; if (enabled.value && document.visibilityState === 'visible') resume() }
-  function blur() { windowFocused = false; cancel(); publish() }
-  function visibility() { if (document.visibilityState === 'visible') { windowFocused = document.hasFocus(); if (active() && enabled.value) resume() } else { cancel(); publish() } }
-  window.addEventListener('focus', focus); window.addEventListener('blur', blur); document.addEventListener('visibilitychange', visibility)
+  window.addEventListener('focus', catchUp)
+  document.addEventListener('visibilitychange', catchUp)
   watch([enabled, () => tasks.value.map(task => `${task.id}:${task.schedule_uuid}:${task.schedule_bound_at}`).sort().join('|')], () => {
     cancel(); updateDay(); publish()
     if (!enabled.value) return
     if (!ids().length) { data.value = {}; return }
-    if (!initialized) {
-      initialized = true
-      if (active()) { nextCheckAt = Date.now(); void refresh('force', generation) } else { waiting = true; publish() }
-    } else if (active()) { waiting = ids().some(id => !stopped(id)); nextCheckAt = Date.now() + 60000; void refresh('cache', generation) }
+    void refresh(forcePending ? 'force' : 'cache', generation)
   }, { immediate: true })
-  onBeforeUnmount(() => { cancel(); window.removeEventListener('focus', focus); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility) })
-  return { data, error }
+  onBeforeUnmount(() => {
+    cancel()
+    window.removeEventListener('focus', catchUp)
+    document.removeEventListener('visibilitychange', catchUp)
+  })
+  function refreshNow() {
+    if (!enabled.value) return
+    cancel()
+    successful.clear()
+    forcePending = true
+    publish()
+    return refresh('force', generation)
+  }
+  return { data, error, refreshNow }
 }

@@ -4,6 +4,7 @@ import {
   createBotColorMap,
   filterTasks,
   formatDuration,
+  formatRunDateTime,
   getBotColor,
   getTaskFrequencyBadge,
   isCrossDay,
@@ -14,6 +15,13 @@ import {
 } from '../src/services/dataService.js'
 
 describe('frontend data utilities', () => {
+  it('运行记录显示北京时间和星期，UTC跨天及无时区影刀时间结果一致', () => {
+    expect(formatRunDateTime('2026-11-13T16:30:00Z')).toBe('11/14 星期六 00:30:00')
+    expect(formatRunDateTime('2026-11-14 00:30:00')).toBe('11/14 星期六 00:30:00')
+    expect(formatRunDateTime('2026-11-13T23:59:30+08:00')).toBe('11/13 星期五 23:59:30')
+    expect(formatRunDateTime(null)).toBe('—')
+    expect(formatRunDateTime('invalid')).toBe('invalid')
+  })
   it('bot_1固定使用琥珀色，与运行成功绿色区分，筛选前后颜色一致', () => {
     expect(getBotColor('bot_1')).toBe('#b7791f')
     expect(createBotColorMap(['admin', 'bot_1', 'bot_2']).get('bot_1')).toBe('#b7791f')

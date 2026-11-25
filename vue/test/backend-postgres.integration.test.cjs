@@ -128,11 +128,14 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     return response.body.tasks[0];
   }
 
-  it('全员隐藏名单独立于排班权限，保留版本、绑定及普通编辑，并原子拒绝冲突', async () => {
+  it('仅管理员修改隐藏名单，普通所有者保留查看及普通编辑权限，保留版本、绑定及普通编辑，并原子拒绝冲突', async () => {
     const owner = await login(1), other = await login(2);
     const task = await createTask(owner, 'schedule-visibility');
     expect(task.is_hidden).toBe(false);
     const change = { id: task.id, expected_hidden: false, is_hidden: true };
+    await owner.patch('/api/tasks/visibility').send({ changes: [change] }).expect(403);
+    await other.patch('/api/tasks/visibility').send({ changes: [change] }).expect(403);
+    await pool.query('UPDATE app_users SET is_admin=TRUE WHERE id=2');
     await other.patch('/api/tasks/visibility').send({ changes: [change] }).expect(200);
     let row = await repositories.tasks.findById(task.id);
     expect(row.isHidden).toBe(true);
@@ -144,7 +147,7 @@ integration('PostgreSQL 真实事务与权限集成', () => {
     row = await repositories.tasks.findById(task.id);
     expect(row.isHidden).toBe(true);
     const second = await createTask(owner, 'schedule-visibility-second');
-    await owner.patch('/api/tasks/visibility').send({ changes: [{ id: second.id, expected_hidden: false, is_hidden: true }, change] }).expect(409);
+    await other.patch('/api/tasks/visibility').send({ changes: [{ id: second.id, expected_hidden: false, is_hidden: true }, change] }).expect(409);
     expect((await repositories.tasks.findById(second.id)).isHidden).toBe(false);
     const audits = await pool.query("SELECT new_value FROM rpa_task_audit_log WHERE task_id=$1 AND new_value->>'scope'='visibility'", [task.id]);
     expect(audits.rows).toHaveLength(1);

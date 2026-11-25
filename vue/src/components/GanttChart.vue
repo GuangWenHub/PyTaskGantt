@@ -832,7 +832,7 @@ function createTimeline() {
     zoomMax: 1000 * 60 * 60 * 30, // 30 小时
     format: {
       minorLabels: { minute: 'HH:mm', hour: 'HH:mm' },
-      majorLabels: { hour: '', day: '' },
+      majorLabels: date => date.clone().locale('en').format('MMM'),
     },
     onMoving: (item, callback) => {
       // 拖拽过程中实时刷新自渲染 tooltip

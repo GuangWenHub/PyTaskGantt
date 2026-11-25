@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hideState = vi.hoisted(() => ({ confirm: null, success: vi.fn(), error: vi.fn(), info: vi.fn(), destroyNotice: vi.fn() }))
-vi.mock('../src/services/taskService.js', () => ({ setTaskVisibility: vi.fn() }))
+vi.mock('../src/services/taskService.js', () => ({ setTaskVisibility: vi.fn(), runTask: vi.fn() }))
 vi.mock('../src/services/yingdaoService.js', () => ({
   getScheduleEditor: vi.fn(),
   getScheduleRecentRuns: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock('naive-ui', () => {
   }
 })
 import TaskEditor from '../src/components/TaskEditor.vue'
-import { setTaskVisibility } from '../src/services/taskService.js'
+import { runTask, setTaskVisibility } from '../src/services/taskService.js'
 import { getScheduleEditor, getScheduleRecentRuns } from '../src/services/yingdaoService.js'
 
 function editor(mode, task = {}) {
@@ -50,6 +50,36 @@ async function submit(wrapper) {
 }
 
 describe('影刀计划自动填写', () => {
+  it('已有任务具备所有者或管理员编辑权限时，可从编辑窗口发起换绑，不提交普通修改', async () => {
+    const task = { id: '1', version: 3, can_edit: true, schedule_uuid: 'schedule-1', task: '任务', bot: 'A' }
+    const wrapper = editor('edit', task)
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '换绑').trigger('click')
+    expect(wrapper.emitted('rebind')[0][0]).toEqual(task)
+    expect(wrapper.emitted('submit')).toBeUndefined()
+    expect(wrapper.emitted('save-local')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it.each([{ id: '1', can_edit: false }, { id: 'tmp:1', can_edit: true }])('只读或临时任务没有换绑入口：%j', async task => {
+    const wrapper = editor('edit', { ...task, schedule_uuid: 'schedule-1' })
+    await flushPromises()
+    expect(wrapper.findAll('button').some(button => button.text() === '换绑')).toBe(false)
+    wrapper.unmount()
+  })
+  it('编辑表单有未保存输入时不发起换绑，取消后重开可正常换绑', async () => {
+    const wrapper = editor('edit', { id: '1', can_edit: true, schedule_uuid: 'schedule-1' })
+    await flushPromises()
+    await wrapper.get('form').trigger('input')
+    await wrapper.findAll('button').find(button => button.text() === '换绑').trigger('click')
+    expect(wrapper.emitted('rebind')).toBeUndefined()
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '换绑').trigger('click')
+    expect(wrapper.emitted('rebind')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it.each(['create', 'edit'])('新增/编辑保存文案明确刷新保留，并在保存前清除旧的编辑提示：%s', async mode => {
     const wrapper = editor(mode, { id: mode === 'edit' ? '1' : undefined, schedule_uuid: 'schedule-1', task: '任务', bot: 'A' })
     await wrapper.setProps({ previewOnly: true })
@@ -104,6 +134,7 @@ describe('影刀计划自动填写', () => {
 
   it('仅持久任务编辑时提供灰色隐藏入口，确认提示包含设置恢复；确认前不写入', async () => {
     const wrapper = editor('edit', { id: '1', task: '要隐藏的任务' })
+    await wrapper.setProps({ canManageHidden: true })
     await flushPromises()
     await wrapper.get('.hide-task-link').trigger('click')
     expect(hideState.confirm.content).toContain('设置')
@@ -125,6 +156,7 @@ describe('影刀计划自动填写', () => {
   })
   it('隐藏保存失败时保留编辑弹窗，已隐藏任务不能再次提交', async () => {
     const wrapper = editor('edit', { id: '1', task: '任务' })
+    await wrapper.setProps({ canManageHidden: true })
     await flushPromises()
     await wrapper.get('.hide-task-link').trigger('click')
     setTaskVisibility.mockRejectedValue(new Error('隐藏名单已变化'))
@@ -211,6 +243,59 @@ describe('影刀计划自动填写', () => {
     getScheduleEditor.mockImplementation(async uuid => plan(uuid))
     getScheduleRecentRuns.mockResolvedValue(recent)
   })
+  it('定时执行与其他方式触发的最新运行分别展示', async () => {
+    getScheduleRecentRuns.mockResolvedValue({
+      ...recent,
+      latest_run: {
+        task_uuid: 'api-execution', normalized_status: '运行成功', duration_seconds: 526,
+        trigger_time: '2026-11-20 09:27:34', start_time: '2026-11-20 09:40:22', end_time: '2026-11-20 09:49:08',
+      },
+    })
+    const wrapper = editor('edit', { id: '1', task: '任务', can_edit: true, schedule_uuid: 'schedule-1' })
+    await wrapper.setProps({ scheduledRunSummary: '2026-11-20 定时触发 07:50 · 已停止' })
+    await flushPromises()
+    expect(wrapper.get('.scheduled-run-summary').text()).toContain('07:50 · 已停止')
+    const latest = wrapper.get('.latest-run')
+    for (const value of ['所有触发方式', '运行成功', '09:27:34', '09:40:22']) expect(latest.text()).toContain(value)
+    wrapper.unmount()
+  })
+
+  it('可编辑任务的最新停止记录单独显示，仅确认后按当前绑定重试', async () => {
+    getScheduleRecentRuns.mockResolvedValue({
+      ...recent, latest_run: { task_uuid: 'stopped-run', normalized_status: '已停止', duration_seconds: 60 },
+    })
+    runTask.mockResolvedValue({ success: true })
+    const wrapper = editor('edit', { id: '1', task: '任务', can_edit: true, schedule_uuid: 'schedule-1' })
+    await flushPromises()
+    const latest = wrapper.get('.latest-run')
+    expect(latest.text()).toContain('已停止')
+    expect(wrapper.text()).toContain('最近10次运行')
+    await latest.get('button').trigger('click')
+    expect(runTask).not.toHaveBeenCalled()
+    await hideState.confirm.onPositiveClick()
+    expect(runTask).toHaveBeenCalledWith('1', 'schedule-1')
+    await flushPromises()
+    expect(latest.text()).toContain('重试已受理')
+    expect(latest.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('编辑时间区只读展示影刀等待时限和各应用执行时限', async () => {
+    getScheduleEditor.mockResolvedValue({
+      ...plan(), timeout_limits: { wait_seconds: 600, execution: [
+        { name: '应用甲', seconds: 23700 }, { name: '应用乙', seconds: null },
+      ] },
+    })
+    const wrapper = editor('edit', { id: '1', task: '任务', schedule_uuid: 'schedule-1' })
+    await flushPromises()
+    const limits = wrapper.get('.task-mode-panel .task-time-limits')
+    expect(limits.text()).toContain('最大等待时间00:10:00')
+    expect(limits.text()).toContain('应用甲 · 06:35:00')
+    expect(limits.text()).toContain('应用乙 · 未设置')
+    expect(limits.find('input').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('按最大耗时而非平均值填写默认时长，显示时分秒及跨天预计耗时', async () => {
     const wrapper = editor('create', { schedule_uuid: 'schedule-1' })
     await flushPromises()
@@ -300,4 +385,11 @@ describe('影刀计划自动填写', () => {
     expect(await submit(wrapper)).toMatchObject({ expected_duration_seconds: 600 })
     wrapper.unmount()
   })
+})
+
+it('普通任务所有者的编辑窗口不提供隐藏入口', async () => {
+  const wrapper = editor('edit', { id: '1', can_edit: true, task: '我的任务' })
+  await flushPromises()
+  expect(wrapper.find('.hide-task-link').exists()).toBe(false)
+  wrapper.unmount()
 })

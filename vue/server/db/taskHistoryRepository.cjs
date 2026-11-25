@@ -97,7 +97,7 @@ function createTaskHistoryRepository(db) {
     );
     const hasMore = rows.length > filters.limit;
     const records = rows.slice(0, filters.limit).map(row => {
-      const canManage = isVisibilityHistory(row) ? !row.current_deleted_at : actor.isAdmin || (row.current_owner_id != null && String(row.current_owner_id) === actor.userId);
+      const canManage = isVisibilityHistory(row) ? actor.isAdmin && !row.current_deleted_at : actor.isAdmin || (row.current_owner_id != null && String(row.current_owner_id) === actor.userId);
       return {
         id: String(row.id), task_id: String(row.task_id), task_name: row.task_name,
         actor_user_id: row.actor_user_id == null ? null : String(row.actor_user_id), actor_name: row.actor_name || '历史操作人',

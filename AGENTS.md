@@ -99,7 +99,7 @@ DEV_USER_NAMES=张三,李四 npm run seed:dev
 - 任意已登录用户可查看全员任务、执行历史、作业和日志。
 - `/api/my/tasks` 只返回当前用户拥有且已绑定的任务。
 - 新建/导入任务归当前用户。
-- 编辑、删除、拖拽落库、换绑、转交、立即执行和单任务同步仅限当前所有者。
+- 编辑、删除、拖拽落库、换绑、转交、立即执行和单任务同步仅限当前所有者或管理员，最终由后端校验。
 - 历史未归属任务仍可查看，但 `can_edit=false`。
 - 不依赖前端隐藏按钮或显示名称做授权。
 
@@ -212,7 +212,7 @@ npm run build
 
 不要提交 `.env`、`dist/` 或 `node_modules/`。未经用户明确要求，不要执行 `git commit`、推送或新建/切换分支。保留用户已有的工作树修改，只改任务范围内文件。
 
-任务隐藏偏好由013迁移追加is_hidden BOOLEAN NOT NULL DEFAULT FALSE，不新建表，不初始化自动隐藏名单。PATCH /api/tasks/visibility为独立的全员共享展示设置：任意已登录用户可调整，包括他人任务；必须经session/origin校验，仅接受去重的精确任务ID、is_hidden和expected_hidden，禁止注入排班字段。单事务有序锁行、核对原标志、只更新is_hidden，并写审计；冲突或删除整批回滚。不改任务配置版本、不修改或运行影刀计划。普通mutation/同步/历史还原保留is_hidden，导入新任务默认false；不要将其加入排班快照或普通草稿字段。轮询以LIVE_FIELDS合并is_hidden，保留本地预览调整。个人任务页仍提供完整任务用于执行管理。
+任务隐藏偏好由013迁移追加is_hidden BOOLEAN NOT NULL DEFAULT FALSE，不新建表，不初始化自动隐藏名单。PATCH /api/tasks/visibility为独立的全员共享展示设置：仅管理员可调整，包括他人任务；普通用户只读名单并可切换本浏览器显示开关；必须经session/origin校验，仅接受去重的精确任务ID、is_hidden和expected_hidden，禁止注入排班字段。单事务有序锁行、核对原标志、只更新is_hidden，并写审计；冲突或删除整批回滚。不改任务配置版本、不修改或运行影刀计划。普通mutation/同步保留is_hidden，导入新任务默认false；普通草稿不接受该字段。历史快照记录可选is_hidden，普通用户还原配置时必须保留当前隐藏值，只有管理员能改变隐藏状态。轮询以LIVE_FIELDS合并is_hidden，保留本地预览调整。个人任务页仍提供完整任务用于执行管理。
 
 TaskEditor底部为已落库任务提供灰色文字“隐藏任务”，新增或临时任务不显示；已隐藏时禁用为“已隐藏”。确认框须提示从标题栏设置恢复、隐藏不保存当前未应用编辑且不影响影刀执行。确认后复用visibility端点，成功才关闭并刷新对应页面；失败保留弹窗和编辑内容，不发submit/delete。
 
@@ -236,7 +236,7 @@ API采集复用规范见DEVELOPMENT.md。执行历史分页统一经YingdaoClien
 
 自定义机器颜色入口MachineColorsSettings，machineColorPreference在页面共享颜色覆盖且不改任务数据；每机器独立Cookie pytaskgantt.machineColor.<URL编码bot名>、一年并在登录时续期，恢复默认只删对应键。状态色唯一来源shared/runStatusColors.mjs，machineColors.mjs仅以OKLab距离<0.075排除很近的状态色，不能再按整个色系或低饱和度禁用，UI、保存和Cookie读取均校验；不得接受任意CSS值。仅覆盖显示color，保留源任务、预览、版本、候选身份。所有候选描述复用candidateExecutionText，从源任务完整clients取全部机器，不受筛选后的单条投影限制；Gantt悬浮/侧栏、TaskList标记保持一致。开发规范详见DEVELOPMENT.md。
 
-今日明细GET /tasks/today-executions支持refresh=force/due/cache与refresh_ids子集：只读缓存模式绝不请求影刀；强制模式跳过已完成分页缓存但合并在途同查询；到期模式只更新指定ID。前端首次打开/刷新强制核对、失败仍强制重试，之后60秒只核对未成功计划，处理中15秒只读缓存。用户明确选择循环任务“任一次成功即停止”，不等待全部触发完成；刷新/重开或上海跨天重查，成功标记只在当前页面内存。visibility隐藏/blur暂停、恢复后从60秒计时，不立即核对；清理定时器和请求，忽略迟到响应。已入队后台批次继续，同进程全员两worker并发队列，不能因已有flight遗漏后续请求。原全局增量同步独立运行。焦点事件仅用于核对策略，严禁恢复窗口激活自动滚动时间轴。
+今日明细GET /tasks/today-executions支持refresh=force/due/cache与refresh_ids子集：只读缓存模式绝不请求影刀；强制模式跳过已完成分页缓存但合并在途同查询；到期模式只更新指定ID。前端首次打开/刷新强制核对、失败仍强制重试，之后60秒只核对未成功计划，处理中15秒只读缓存。用户明确选择循环任务“任一次成功即停止”，不等待全部触发完成；刷新/重开或上海跨天重查，成功标记只在当前页面内存。标签页隐藏或失焦时继续轮询，恢复可见或窗口聚焦时仅补查已到期且尚未成功的计划。请求15秒超时后提示并自动重试，关闭开关或离页时清理计时器和请求，忽略迟到响应。已入队后台批次继续，同进程全员两worker并发队列，不能因已有flight遗漏后续请求。原全局增量同步独立运行。焦点事件仅用于核对策略，严禁恢复窗口激活自动滚动时间轴。
 
 当前时间线设置不显示文字彩蛋等说明，彩蛋功能保留。机器颜色仅用调色板及饱和度，取消推荐色与原生任意选色/HEX输入；禁用色直接灰色背景disabled，不使用圆形覆盖。使用0.075的窄色差规则，黑白及明显不同的深浅色允许，保存和Cookie读取继续校验。缓存位置与最新策略在DEVELOPMENT.md说明，浏览器只保存偏好、回执及临时显示状态，不把服务端扫描数据挪入浏览器持久存储。
 
@@ -247,5 +247,11 @@ API采集复用规范见DEVELOPMENT.md。执行历史分页统一经YingdaoClien
 - 耗时与跨天判断按秒计算；不得把30秒显示为0分钟或漏判同一分钟内的次日结束。
 - 最近十次统计区分不合格记录与接口核验失败，返回verification_failed_count/incomplete；有核验失败时不自动建议耗时、不进入30秒统计缓存。一键新增遇到核验失败整体终止，不得当作无记录使用1分钟默认值；无记录且采集完整时保留原有明确提示的默认策略。
 - 同步应用通过taskMutationService.applyBatch内部beforeCommit回调，把已应用扫描快照用同一数据库事务连接保存；快照保存失败必须连任务、审计、操作历史一起回滚，不允许提交任务后另行保存快照。
-- 隐藏与恢复显示除底层审计外，还写入每任务50条操作历史。JSON快照增加可选is_hidden/operation_scope，无DDL；只有前后快照都标为visibility且其他配置一致才允许按共用名单权限还原。还原此类记录只更新is_hidden，不改任务版本/配置/绑定、不请求影刀；正常配置还原仍检查所有权，旧快照缺少is_hidden时保留当前隐藏状态。
+- 隐藏与恢复显示除底层审计外，还写入每任务50条操作历史。JSON快照增加可选is_hidden/operation_scope，无DDL；只有前后快照都标为visibility且其他配置一致才允许由管理员还原。还原此类记录只更新is_hidden，不改任务版本/配置/绑定、不请求影刀；正常配置还原仍检查所有权，旧快照缺少is_hidden时保留当前隐藏状态。
 - 设置中“显示隐藏任务”一项合并开关与“设置名单”按钮，后者进入二级菜单；不要拆成两个设置项。当前时间线显示用途说明，不透露彩蛋。
+
+
+TaskEditor在编辑真实已绑定任务且服务端can_edit=true时显示换绑入口，emit rebind复用SchedulePage/MyTasksPage既有换绑确认流程，不把schedule_uuid夹带普通保存。表单输入、时长/机器/标签等编辑需先保存或取消；父页面仍检查任务草稿。换绑成功保持编辑窗口并更新任务版本，列表旧缓存不可覆盖新绑定；刷新失败明确提示已保存。无需新增后端接口或DDL。最近运行起止时间经formatRunDateTime统一上海时区及星期，无时区影刀时间按+08:00解释。
+
+
+隐藏名单权限：PATCH /tasks/visibility在路由和repository均检查actor.isAdmin；非管理员返回ADMIN_REQUIRED且不得写入。TaskEditor仅canManageHidden（来自有效会话is_admin）时显示隐藏入口；HiddenTasksDialog普通用户显示“查看名单”，保留开关、禁用全部增删/保存操作。隐藏操作历史的can_restore仅管理员为true，restore-preview/restore服务再次校验管理员。普通配置历史还原也必须保留当前is_hidden，堵住间接变更路径。不得为此自动提升现有账号角色，不新增迁移或修改数据库权限数据。

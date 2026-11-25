@@ -350,13 +350,16 @@ function createTaskActionService({
     }
   }
 
-  async function prepareRunRequest(actorInput, taskId) {
+  async function prepareRunRequest(actorInput, taskId, expectedScheduleUuid) {
     const actor = normalizeActor(actorInput);
     const userId = actor.userId;
     return withTransaction(pool, async client => {
       const current = await lockTask(client, taskId);
       assertOwner(current, actor);
       if (!current.schedule_uuid) throw new ValidationError('任务尚未绑定影刀计划');
+      if (expectedScheduleUuid && current.schedule_uuid !== expectedScheduleUuid) {
+        throw new ConflictError('TASK_BINDING_CHANGED', '任务已换绑，请刷新后再执行');
+      }
 
       if (await findActiveExecution(
         client,
@@ -702,12 +705,12 @@ function createTaskActionService({
     return completed.response;
   }
 
-  async function runNow(actor, taskId) {
+  async function runNow(actor, taskId, expectedScheduleUuid) {
     const taskKey = String(taskId);
     if (runningLocks.has(taskKey)) {
       throw new ConflictError('TASK_ALREADY_ACTIVE', '任务正在启动或运行中');
     }
-    const promise = prepareRunRequest(actor, taskId).then(dispatchRunRequest);
+    const promise = prepareRunRequest(actor, taskId, expectedScheduleUuid).then(dispatchRunRequest);
     runningLocks.set(taskKey, promise);
     try {
       return await promise;

@@ -19,13 +19,10 @@
 
     <div class="filter-section">
       <n-button-group size="small" class="filter-button-group">
-        <n-button @click="$emit('refresh')" :title="previewOnly ? '清除预览调整并刷新' : '丢弃草稿并刷新'">刷新</n-button>
-        <n-button @click="triggerImport">导入</n-button>
-        <n-dropdown :options="exportOptions" @select="key => $emit('export', key)" trigger="click">
-          <n-button>导出</n-button>
-        </n-dropdown>
+        <n-button :loading="refreshing" :disabled="refreshing" @click="$emit('refresh')" :title="previewOnly ? '清除预览调整并刷新' : '丢弃草稿并刷新'">刷新</n-button>
+        <n-button @click="$emit('import')">导入</n-button>
+        <n-button @click="$emit('export')">导出</n-button>
       </n-button-group>
-      <input ref="fileInputRef" type="file" accept=".csv,.json" hidden @change="onFileSelected" />
       <n-button
         v-if="!previewOnly"
         :type="hasUnsaved ? 'warning' : 'primary'"
@@ -93,12 +90,11 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import {
   NButton,
   NButtonGroup,
   NCard,
-  NDropdown,
   NInput,
   NRadioButton,
   NRadioGroup,
@@ -106,6 +102,7 @@ import {
 } from 'naive-ui'
 
 const props = defineProps({
+  refreshing: Boolean,
   previewOnly: { type: Boolean, default: false },
   syncUnread: Boolean,
   syncRunning: Boolean,
@@ -122,33 +119,16 @@ const props = defineProps({
   saving: { type: Boolean, default: false },
 })
 
-const emit = defineEmits([
+defineEmits([
   'update:searchTerm', 'update:selectedBots', 'update:selectedOwners', 'update:sortBy',
   'refresh', 'import', 'export', 'create', 'save', 'reconcile',
 ])
 
-const exportOptions = [
-  { label: '导出为 CSV', key: 'csv' },
-  { label: '导出为 JSON', key: 'json' },
-]
 const botOptions = computed(() => props.allBots.map(value => ({ label: value, value })))
 const ownerOptions = computed(() => props.allOwners.map(owner => ({
   label: owner.display_name,
   value: owner.id,
 })))
-const fileInputRef = ref(null)
-
-function triggerImport() {
-  fileInputRef.value?.click()
-}
-
-function onFileSelected(event) {
-  const file = event.target.files?.[0]
-  if (file) {
-    event.target.value = ''
-    emit('import', file)
-  }
-}
 </script>
 <style scoped>
 .filter-primary-actions { display: flex; gap: 8px; }

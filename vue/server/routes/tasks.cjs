@@ -1,7 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const asyncHandler = require('../middleware/asyncHandler.cjs');
-const { ValidationError } = require('../errors.cjs');
+const { ValidationError, AdminRequiredError } = require('../errors.cjs');
 const { presentUser, presentTask, presentExecution } = require('../presenters.cjs');
 
 const versionSchema = z.coerce.number().int().positive();
@@ -114,9 +114,10 @@ function createTasksRouter({ usersRepository, tasksRepository, taskMutationServi
     });
   }));
 
-  // Shared display settings: any authenticated user can manage the common list.
+  // Shared display settings: authenticated users can read; only admins can change the list.
   // This endpoint cannot change schedule/configuration fields or execute tasks.
   router.patch('/tasks/visibility', asyncHandler(async (req, res) => {
+    if (!req.actor.isAdmin) throw new AdminRequiredError('仅管理员可修改隐藏任务名单');
     const input = parseBody(z.object({ changes: z.array(z.object({
       id: z.string().transform(value => parseTaskId(value)),
       is_hidden: z.boolean(), expected_hidden: z.boolean(),
@@ -163,12 +164,21 @@ function createTasksRouter({ usersRepository, tasksRepository, taskMutationServi
 
   router.post('/tasks/:id/run', asyncHandler(async (req, res) => {
     const taskId = parseTaskId(req.params.id);
-    res.status(202).json(await taskActionService.runNow(req.actor, taskId));
+    const { expected_schedule_uuid } = parseBody(z.object({
+      expected_schedule_uuid: z.string().trim().min(1).max(200).optional(),
+    }), req.body ?? {});
+    const args = expected_schedule_uuid === undefined ? [] : [expected_schedule_uuid];
+    res.status(202).json(await taskActionService.runNow(req.actor, taskId, ...args));
   }));
 
   router.post('/tasks/:id/sync', asyncHandler(async (req, res) => {
     const taskId = parseTaskId(req.params.id);
     res.status(202).json(await syncCoordinator.syncTask(req.actor, taskId));
+  }));
+
+  router.post('/tasks/sync', asyncHandler(async (_req, res) => {
+    const result = await syncCoordinator.syncAll();
+    res.json(result);
   }));
 
   router.post('/my/tasks/sync', asyncHandler(async (req, res) => {

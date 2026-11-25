@@ -20,7 +20,7 @@
       <div v-if="!adding" class="task-name-setting">
         <div><strong>显示隐藏任务</strong><div class="hidden-task-meta">开启后显示名单内的任务；默认关闭。已隐藏 {{ hiddenRows.length }} 个任务，名单由所有账号共用，显示偏好仅保存在当前浏览器。</div></div>
         <div class="hidden-task-setting-actions">
-          <n-button size="small" @click="editingHidden = true">设置名单</n-button>
+          <n-button size="small" @click="editingHidden = true">{{ canManageHidden ? '设置名单' : '查看名单' }}</n-button>
           <n-switch :value="showHiddenTasks" aria-label="显示隐藏任务" @update:value="value => $emit('update:showHiddenTasks', value)" />
         </div>
       </div>
@@ -42,14 +42,14 @@
         <div class="hidden-task-count">已选择 {{ selected.length }} 项</div>
       </template>
       <div v-else class="hidden-task-toolbar">
-        <span>已隐藏 {{ hiddenRows.length }} 个任务 · 所有账号共用</span>
-        <n-button type="primary" size="small" :disabled="saving" @click="openAdd">添加</n-button>
+        <span>已隐藏 {{ hiddenRows.length }} 个任务 · 所有账号共用{{ canManageHidden ? '' : ' · 仅管理员可修改' }}</span>
+        <n-button v-if="canManageHidden" type="primary" size="small" :disabled="saving" @click="openAdd">添加</n-button>
       </div>
       <div class="hidden-task-rows">
         <div v-for="task in displayedRows" :key="task.id" class="hidden-task-row">
           <n-checkbox v-if="adding" :checked="selected.includes(String(task.id))" :aria-label="task.task" @update:checked="value => selectTask(task.id, value)" />
           <div class="hidden-task-description"><div class="hidden-task-name">{{ task.task }}</div><div class="hidden-task-meta">{{ task.bot || '未指定机器' }} · {{ taskTypes(task).join(' / ') }}</div></div>
-          <n-button v-if="!adding" size="tiny" quaternary :disabled="saving" @click="removeTask(task.id)">移出名单</n-button>
+          <n-button v-if="!adding && canManageHidden" size="tiny" quaternary :disabled="saving" @click="removeTask(task.id)">移出名单</n-button>
         </div>
         <n-empty v-if="!displayedRows.length" :description="adding ? '没有符合条件的任务' : '暂无隐藏任务'" class="hidden-task-empty" />
       </div>
@@ -62,7 +62,7 @@
         <template v-else-if="editingHidden">
         <n-button :disabled="saving" @click="adding ? adding = false : editingHidden = false">{{ adding ? '返回名单' : '返回设置' }}</n-button>
         <n-button v-if="adding" type="primary" :disabled="!selected.length" @click="addSelected">添加所选（{{ selected.length }}）</n-button>
-        <n-button v-else type="primary" :loading="saving" @click="save">保存名单</n-button>
+        <n-button v-else-if="canManageHidden" type="primary" :loading="saving" @click="save">保存名单</n-button>
         </template>
         <n-button v-else @click="$emit('update:show', false)">关闭</n-button>
       </div>
@@ -75,7 +75,7 @@ import { computed, ref, watch } from 'vue'
 import { NButton, NCheckbox, NEmpty, NInput, NModal, NSwitch } from 'naive-ui'
 import MachineColorsSettings from './MachineColorsSettings.vue'
 import { isSharedTask } from '../../shared/scheduleDispatch.mjs'
-const props = defineProps({ autoScroll: Boolean, showReferenceLines: { type: Boolean, default: true }, showCurrentTimeLine: Boolean, showHiddenTasks: Boolean, showRunStatus: Boolean, showTaskNames: { type: Boolean, default: true }, show: Boolean, tasks: { type: Array, default: () => [] }, saving: Boolean })
+const props = defineProps({ canManageHidden: Boolean, autoScroll: Boolean, showReferenceLines: { type: Boolean, default: true }, showCurrentTimeLine: Boolean, showHiddenTasks: Boolean, showRunStatus: Boolean, showTaskNames: { type: Boolean, default: true }, show: Boolean, tasks: { type: Array, default: () => [] }, saving: Boolean })
 const emit = defineEmits(['update:autoScroll', 'update:show', 'save', 'update:showTaskNames', 'update:showRunStatus', 'update:showHiddenTasks', 'update:showCurrentTimeLine', 'update:showReferenceLines'])
 const editingColors = ref(false)
 const editingHidden = ref(false)
@@ -83,7 +83,7 @@ const adding = ref(false), search = ref(''), kind = ref('all'), selected = ref([
 let baseline = new Map()
 const categories = [{ value: 'all', label: '全部任务' }, { value: 'cron', label: '循环任务' }, { value: 'shared', label: '共享任务' }, { value: 'normal', label: '普通任务' }]
 const savedTasks = computed(() => props.tasks.filter(task => /^[1-9]\d*$/.test(String(task.id))))
-watch(() => props.show, show => {
+watch(() => [props.show, props.canManageHidden], ([show]) => {
   if (!show) return
   baseline = new Map(savedTasks.value.map(task => [String(task.id), Boolean(task.is_hidden)]))
   hidden.value = [...baseline].filter(([, value]) => value).map(([id]) => id)
@@ -107,11 +107,12 @@ const displayedRows = computed(() => {
       || (kind.value === 'shared' && isSharedTask(task))
       || (kind.value === 'normal' && task.timing_mode !== 'cron' && !isSharedTask(task))))
 })
-function openAdd() { adding.value = true; selected.value = []; search.value = ''; kind.value = 'all' }
-function selectTask(id, checked) { id = String(id); selected.value = checked ? [...new Set([...selected.value, id])] : selected.value.filter(value => value !== id) }
-function removeTask(id) { hidden.value = hidden.value.filter(value => value !== String(id)) }
-function addSelected() { hidden.value = [...new Set([...hidden.value, ...selected.value])]; selected.value = []; adding.value = false }
+function openAdd() { if (!props.canManageHidden) return; adding.value = true; selected.value = []; search.value = ''; kind.value = 'all' }
+function selectTask(id, checked) { if (!props.canManageHidden) return; id = String(id); selected.value = checked ? [...new Set([...selected.value, id])] : selected.value.filter(value => value !== id) }
+function removeTask(id) { if (!props.canManageHidden) return; hidden.value = hidden.value.filter(value => value !== String(id)) }
+function addSelected() { if (!props.canManageHidden) return; hidden.value = [...new Set([...hidden.value, ...selected.value])]; selected.value = []; adding.value = false }
 function save() {
+  if (!props.canManageHidden) return
   const changes = [...baseline].filter(([id, old]) => hidden.value.includes(id) !== old)
     .map(([id, expected_hidden]) => ({ id, expected_hidden, is_hidden: hidden.value.includes(id) }))
   emit('save', changes)

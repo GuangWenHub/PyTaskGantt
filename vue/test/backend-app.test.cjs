@@ -366,6 +366,36 @@ describe('Express 会话与权限边界', () => {
       ExpectedDurationSeconds: 60,
     }]);
     expect(JSON.stringify(exported.body)).not.toContain('must-not-export');
+
+    const content = JSON.stringify([
+      null,
+      { Task: '格式错误', Start: '99:00', Finish: '10:00', Bot: 'B', ScheduleUuid: 'bad-time' },
+      { Task: '可单独导入', Start: '09:00', Finish: '10:00', Bot: 'B', ScheduleUuid: 'selected-plan' },
+      { Task: '已绑定', Start: '09:00', Finish: '10:00', Bot: 'B', ScheduleUuid: 'schedule-export' },
+    ]);
+    imported = null;
+    const preview = await agent.post('/api/import/preview').send({ format: 'json', content }).expect(200);
+    expect(preview.body.rows.map(row => Boolean(row.error))).toEqual([true, true, false, true]);
+    expect(imported).toBeNull();
+    for (const indices of [[], [2, 2], [4], ['2']]) {
+      await agent.post('/api/import').send({ format: 'json', content, indices }).expect(400);
+    }
+    const selectedImport = await agent.post('/api/import').send({ format: 'json', content, indices: [2] }).expect(200);
+    expect(selectedImport.body.count).toBe(1);
+    expect(imported.body.mutations).toMatchObject([{ temp_id: 'import:2', task: '可单独导入' }]);
+    expect((await agent.post('/api/export/json').send({ task_ids: ['99'] }).expect(200)).body).toEqual(exported.body);
+    await agent.post('/api/export/json').send({ task_ids: [] }).expect(400);
+    await agent.post('/api/export/json').send({ task_ids: ['100'] }).expect(409);
+  });
+
+  it('已登录用户可通过刷新入口触发现有的全局运行同步', async () => {
+    const syncAll = vi.fn(async () => ({ received: 2, applied: 1 }));
+    const app = buildApp({ services: { syncCoordinator: { syncAll } } });
+    await request(app).post('/api/tasks/sync').expect(401);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/dev/switch').send({ user_id: '2' }).expect(200);
+    expect((await agent.post('/api/tasks/sync').expect(200)).body).toEqual({ received: 2, applied: 1 });
+    expect(syncAll).toHaveBeenCalledTimes(1);
   });
 
   it('后端拒绝越权保存，且拒绝不在白名单中的写请求来源', async () => {

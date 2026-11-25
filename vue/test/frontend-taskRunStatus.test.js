@@ -35,6 +35,12 @@ it('每次触发分别匹配，长任务按触发而非结束匹配，重试最�
   expect(indicate(0, 28800).background).toContain('80% 100%')
   expect(indicate(0, 28800).hint).toContain('运行成功 1 次')
 })
+it('单次状态明确显示定时触发时刻和停止结果', () => {
+  const single = { ...task, start: '07:50:00', timing_mode: 'single', schedule_cron_expression: null }
+  const result = taskRunIndicators(single, payload([record(7, '已停止', { trigger_time: '2026-11-13T07:50:00+08:00' })]))()
+  expect(result.background).toContain('#e34d59')
+  expect(result.hint).toBe('2026-11-13 定时触发 07:50 · 已停止')
+})
 it('跨日、其他任务和旧绑定不能着色，读取失败不冒充未运行', () => {
   const data = payload([record(0, '运行成功', { trigger_time: '2026-11-12T15:59:59Z' }), record(2, '运行成功', { schedule_uuid: 'old' }), record(4, '运行成功', { task_id: '2' })])
   expect(taskRunIndicators(task, data)(0, 28800).background).not.toContain('#22a35a')
@@ -82,25 +88,44 @@ it('关闭不请求，首次开启强制核对，之后60秒核对，取消后�
   await vi.advanceTimersByTimeAsync(120000); expect(apiRequest).toHaveBeenCalledTimes(2)
   view.wrapper.unmount()
 })
-it('后台停止请求，激活后重新等满60秒，连续焦点事件不留下重复计时器', async () => {
+it('窗口失焦仍按原来的60秒计时，连续焦点事件不重置计时器', async () => {
   apiRequest.mockResolvedValue(payload([]))
   const view = monitor(); await flushPromises()
+  await vi.advanceTimersByTimeAsync(20000)
   window.dispatchEvent(new Event('blur'))
-  await vi.advanceTimersByTimeAsync(120000); expect(apiRequest).toHaveBeenCalledTimes(1)
-  expect(view.state.data.value.monitor.paused).toBe(true)
+  await vi.advanceTimersByTimeAsync(30000)
   window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('focus'))
-  await vi.advanceTimersByTimeAsync(59999); expect(apiRequest).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(9999); expect(apiRequest).toHaveBeenCalledTimes(1)
   await vi.advanceTimersByTimeAsync(1); expect(apiRequest).toHaveBeenCalledTimes(2)
+  expect(apiRequest.mock.calls[1][0]).toContain('refresh=due')
   view.wrapper.unmount(); expect(vi.getTimerCount()).toBe(0)
 })
-it('页面初始未激活不请求，激活60秒后首次强制核对', async () => {
-  vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-  apiRequest.mockResolvedValue(payload([]))
-  const view = monitor(); await flushPromises()
+it('初始标签页隐藏，任务加载后仍立即发起首轮查询且切换标签不取消请求', async () => {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+  let resolve
+  apiRequest.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+  const view = monitor(ref(true), ref([]))
   expect(apiRequest).not.toHaveBeenCalled()
-  window.dispatchEvent(new Event('focus'))
-  await vi.advanceTimersByTimeAsync(60000)
+  view.rows.value = [task]; await nextTick()
   expect(apiRequest.mock.calls[0][0]).toContain('refresh=force')
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  document.dispatchEvent(new Event('visibilitychange'))
+  expect(apiRequest.mock.calls[0][1].signal.aborted).toBe(false)
+  expect(apiRequest).toHaveBeenCalledTimes(1)
+  resolve(payload([])); await flushPromises()
+  expect(view.state.data.value.date).toBe('2026-11-13')
+  view.wrapper.unmount()
+})
+it('首次请求超时会显示提示并自动重试', async () => {
+  apiRequest.mockImplementationOnce((_, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+  })).mockResolvedValue(payload([]))
+  const view = monitor()
+  await vi.advanceTimersByTimeAsync(15000)
+  expect(view.state.data.value.error).toContain('超时')
+  await vi.advanceTimersByTimeAsync(45000)
+  expect(apiRequest.mock.calls[1][0]).toContain('refresh=force')
+  expect(view.state.data.value.date).toBe('2026-11-13')
   view.wrapper.unmount()
 })
 it('处理中15秒只读缓存；循环任务任一次成功后停止，重新打开才强制核对', async () => {
@@ -128,16 +153,19 @@ it('成功与未成功计划混合时，只核对未成功的计划', async () =
   view.wrapper.unmount()
 })
 
-it('标签页隐藏时暂停，恢复可见后从60秒重新计时', async () => {
+it('标签页隐藏时继续轮询，浏览器延迟定时器时恢复可见立即补查', async () => {
   apiRequest.mockResolvedValue(payload([]))
   const view = monitor(); await flushPromises()
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
   document.dispatchEvent(new Event('visibilitychange'))
-  await vi.advanceTimersByTimeAsync(90000); expect(apiRequest).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(60000); expect(apiRequest).toHaveBeenCalledTimes(2)
+  vi.setSystemTime(Date.now() + 75000)
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
   document.dispatchEvent(new Event('visibilitychange'))
-  await vi.advanceTimersByTimeAsync(59999); expect(apiRequest).toHaveBeenCalledTimes(1)
-  await vi.advanceTimersByTimeAsync(1); expect(apiRequest).toHaveBeenCalledTimes(2)
+  window.dispatchEvent(new Event('focus'))
+  await flushPromises()
+  expect(apiRequest).toHaveBeenCalledTimes(3)
+  expect(apiRequest.mock.calls[2][0]).toContain('refresh=due')
   view.wrapper.unmount()
 })
 it('首次强制核对失败后仍按强制模式重试，不用旧成功记录跳过核对', async () => {

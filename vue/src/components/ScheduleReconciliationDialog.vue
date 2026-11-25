@@ -1,13 +1,13 @@
 <template>
   <n-modal :show="show" preset="card" title="同步影刀计划" class="responsive-modal reconciliation-modal" :mask-closable="false" :closable="!applying" :close-on-esc="!applying" @update:show="value => $emit('update:show', value)">
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
-    <div class="reconciliation-toolbar"><span v-if="job?.scanned_at">上次结果 {{ formatDateTime(job.scanned_at) }} · 一致 {{ job.unchanged }} 条 · 已处理 {{ appliedCount }} 条</span><span v-if="running" role="status">后台更新中 · {{ planSyncStore.state.job?.progress?.stage || '准备扫描' }} · {{ planSyncStore.state.job?.progress?.done || 0 }}/{{ planSyncStore.state.job?.progress?.total || '…' }}，可先查看上次结果</span><n-button size="small" :disabled="running || applying" @click="start">重新扫描</n-button></div>
+    <div class="reconciliation-toolbar"><span v-if="job?.scanned_at">上次结果 {{ formatDateTime(job.scanned_at) }} · 一致 {{ job.unchanged }} 条 · 已处理 {{ appliedCount }} 条</span><span v-if="running" role="status">后台更新中 · {{ planSyncStore.state.job?.progress?.stage || '准备扫描' }} · {{ planSyncStore.state.job?.progress?.done || 0 }}/{{ planSyncStore.state.job?.progress?.total || '…' }}，可先查看上次结果</span><n-button size="small" :disabled="running || applying || deletingLocalTask" @click="start">重新扫描</n-button></div>
     <n-spin :show="loading">
       <template v-if="job?.state === 'ready'">
         <n-alert v-if="!pendingEntries.length" type="success" class="page-alert">核对完成，当前没有待处理差异。</n-alert>
         <n-tabs v-model:value="active" type="line"><n-tab-pane v-for="tab in tabs" :key="tab.key" :name="tab.key" :tab="`${tab.label}（${count(tab.key)}）`" /></n-tabs>
         <n-data-table :columns="columns" :data="rows" :row-key="rowKey" :checked-row-keys="selected" @update:checked-row-keys="value => selected = value" :pagination="{ pageSize: 10 }" :scroll-x="820" striped size="small" />
-        <div class="reconciliation-actions"><n-button v-if="active === 'create'" type="primary" :loading="applying" :disabled="!available.length" @click="confirmApply(available.map(row => row.id), true)">一键新增（{{ available.length }}）</n-button><n-button v-if="active === 'update'" type="primary" :loading="applying" :disabled="!available.length" @click="confirmApply(available.map(row => row.id))">同步全部设置变化</n-button><n-button :type="active === 'delete' ? 'error' : 'primary'" :disabled="!selectedRows.length || applying" :loading="applying" @click="handleSelected">{{ selectedActionLabel }}（{{ selectedRows.length }}）</n-button></div>
+        <div class="reconciliation-actions"><n-button v-if="active === 'create'" type="primary" :loading="applying" :disabled="!available.length" @click="confirmApply(available.map(row => row.id), true)">一键新增（{{ available.length }}）</n-button><n-button v-if="active === 'update'" type="primary" :loading="applying" :disabled="!available.length" @click="confirmApply(available.map(row => row.id))">同步全部设置变化</n-button><n-button :type="active === 'delete' ? 'error' : 'primary'" :disabled="!selectedRows.length || applying || deletingLocalTask" :loading="applying" @click="handleSelected">{{ selectedActionLabel }}（{{ selectedRows.length }}）</n-button></div>
       </template>
     </n-spin>
   </n-modal>
@@ -18,8 +18,14 @@ import { planSyncStore } from '../stores/planSyncStore.js'
 import { NAlert, NButton, NDataTable, NDropdown, NModal, NSpin, NTabPane, NTabs, useDialog, useMessage } from 'naive-ui'
 import { applyPlanChanges } from '../services/scheduleReconciliationService.js'
 import { formatDateTime } from '../services/dataService.js'
-const props = defineProps({ show: Boolean, isTaskDirty: { type: Function, default: () => false } })
-const emit = defineEmits(['update:show', 'create', 'applied'])
+const props = defineProps({
+  show: Boolean,
+  isTaskDirty: { type: Function, default: () => false },
+  resolveLocalTask: { type: Function, default: () => null },
+  localTasksLoaded: Boolean,
+  deletingLocalTask: Boolean,
+})
+const emit = defineEmits(['update:show', 'create', 'applied', 'edit-local', 'delete-local'])
 const job = computed(() => planSyncStore.state.result || planSyncStore.state.job)
 const localError = ref('')
 const error = computed(() => localError.value || planSyncStore.state.error)
@@ -28,13 +34,14 @@ const loading = computed(() => planSyncStore.state.initializing || (running.valu
 const applying = ref(false), active = ref('create'), selected = ref([])
 const tabs = [{ key: 'create', label: '待新增' }, { key: 'delete', label: '待移除' }, { key: 'update', label: '设置变化' }, { key: 'error', label: '需人工处理' }, { key: 'whitelist', label: '白名单' }]
 const message = useMessage(), dialog = useDialog()
-const pendingEntries = planSyncStore.entries
+const pendingEntries = computed(() => planSyncStore.entries.value.filter(row =>
+  row.kind !== 'error' || !row.task_id || !props.localTasksLoaded || props.resolveLocalTask(row)))
 const rows = computed(() => active.value === 'whitelist' ? planSyncStore.state.whitelist : pendingEntries.value.filter(row => row.kind === active.value))
 const appliedCount = computed(() => (job.value?.entries || []).filter(row => row.applied).length)
-const blocked = row => running.value || !row.can_apply || row.kind === 'error' || (row.task_id && props.isTaskDirty(row.task_id))
+const blocked = row => running.value || props.deletingLocalTask || !row.can_apply || row.kind === 'error' || (row.task_id && props.isTaskDirty(row.task_id))
 const rowKey = row => active.value === 'whitelist' ? row.key : row.id
 const selectable = row => !running.value && (active.value === 'whitelist' ? row.can_edit : active.value === 'error' ? true : !blocked(row))
-const selectionDisabled = row => applying.value || !selectable(row)
+const selectionDisabled = row => applying.value || props.deletingLocalTask || !selectable(row)
 const available = computed(() => rows.value.filter(selectable))
 const selectedRows = computed(() => available.value.filter(row => selected.value.includes(rowKey(row))))
 const selectedActionLabel = computed(() => ({ create: '新增所选', update: '同步所选', delete: '移除所选', error: '重新核验所选', whitelist: '恢复所选提醒与同步' })[active.value])
@@ -61,8 +68,22 @@ function renderFields(row) {
     : row.fields.map(field => h('div', { key: field.field }, [h('strong', `${field.label}：`), h('span', display(field.local)), h('span', ' → '), h('span', display(field.remote))])))
   return h('div', { class: 'reconciliation-fields' }, [h('div', { class: 'reconciliation-field-values' }, values)])
 }
+function renderManualAction(row) {
+  if (!row.task_id) return '请核对后重试'
+  const task = props.resolveLocalTask(row)
+  if (!task) return '正在读取本地任务'
+  if (!task.can_edit) return '无修改权限'
+  const dirty = props.isTaskDirty(task.id)
+  const disabled = running.value || applying.value || props.deletingLocalTask || dirty
+  return h('div', { class: 'reconciliation-manual-actions' }, [
+    h(NButton, { size: 'tiny', type: 'primary', disabled, onClick: () => emit('edit-local', row) }, () => '修改'),
+    h(NButton, { size: 'tiny', type: 'error', secondary: true, disabled, onClick: () => emit('delete-local', row) }, () => '删除'),
+    dirty ? h('small', '请先处理当前任务的草稿') : null,
+  ])
+}
 function renderAction(row) {
-  const action = blocked(row) ? h('span', running.value ? '更新结果后可同步' : row.kind === 'error' ? '请核对后重试' : row.can_apply ? '另有待保存草稿，先处理草稿' : '无修改权限')
+  if (row.kind === 'error') return renderManualAction(row)
+  const action = blocked(row) ? h('span', running.value ? '更新结果后可同步' : row.can_apply ? '另有待保存草稿，先处理草稿' : '无修改权限')
     : h(NButton, { size: 'tiny', type: row.kind === 'delete' ? 'error' : 'primary', disabled: applying.value,
       onClick: () => row.kind === 'create' ? emit('create', { snapshot_id: job.value.id, entry: row }) : confirmApply([row.id]) },
     () => row.kind === 'create' ? '查看并新增' : row.kind === 'delete' ? '确认移除' : '同步此任务')
@@ -156,5 +177,6 @@ defineExpose({ refresh })
 .reconciliation-fields { display: grid; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
 .reconciliation-field-values { display: grid; gap: 8px; }
 .reconciliation-row-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.reconciliation-manual-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .reconciliation-row-actions .reconciliation-ignore { color: var(--muted); font-weight: 400; }
 </style>

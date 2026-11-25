@@ -52,9 +52,10 @@
             :has-unsaved="store.hasUnsaved.value"
             :mutation-count="store.mutationList.value.length"
             :saving="store.state.saving"
+            :refreshing="refreshing"
             @refresh="confirmRefresh"
-            @import="handleImport"
-            @export="handleExport"
+            @import="openTransferDialog('import')"
+            @export="openTransferDialog('export')"
             @create="openCreate"
             :sync-unread="planSyncStore.state.unread"
             :sync-running="planSyncStore.state.running"
@@ -72,14 +73,18 @@
       </div>
     </n-spin>
 
+    <TaskTransferDialog v-model:show="transferDialogVisible" :mode="transferDialogMode"
+      :tasks="savedExportTasks" @complete="handleTransferComplete" />
     <TaskEditor
+      :can-manage-hidden="Boolean(auth.user?.is_admin)"
       :preview-only="!syncCreateContext"
       :persisting="Boolean(syncCreateContext)"
       allow-local-save
-      :saving="syncCreating"
+      :saving="syncCreating || (rebindVisible && actionLoading)"
       v-model:show="editorVisible"
       :mode="editorMode"
       :task="editingTask"
+      :scheduled-run-summary="editorScheduledRunSummary"
       :all-bots="allBots"
       :all-tags="allTags"
       :reserved-schedule-uuids="reservedScheduleUuids"
@@ -87,10 +92,14 @@
       @save-local="handleEditorSaveLocal"
       @delete="handleEditorDelete"
       @hidden="handleTaskHidden"
+      @rebind="openRebind"
       @preview-change="editorHasPreviewChanges = true"
     />
-    <ScheduleReconciliationDialog ref="reconciliationRef" v-model:show="reconciliationVisible" :is-task-dirty="historyTaskHasDraft" @create="openSyncCreate" @applied="refreshAfterPlanSync" />
-    <n-modal v-model:show="rebindVisible" preset="card" title="换绑影刀计划" class="responsive-modal compact-modal">
+    <ScheduleReconciliationDialog ref="reconciliationRef" v-model:show="reconciliationVisible"
+      :is-task-dirty="historyTaskHasDraft" :resolve-local-task="resolveReconciliationTask" :local-tasks-loaded="store.state.loaded"
+      :deleting-local-task="deletingReconciliationTask" @edit-local="openReconciliationTask" @delete-local="confirmReconciliationDelete"
+      @create="openSyncCreate" @applied="refreshAfterPlanSync" />
+    <n-modal v-model:show="rebindVisible" preset="card" title="换绑影刀计划" class="responsive-modal compact-modal" :mask-closable="!actionLoading" :closable="!actionLoading" :close-on-esc="!actionLoading">
       <p class="dialog-description">任务所有者不会改变；新绑定只接收绑定时间之后的执行记录。</p>
       <SchedulePicker
         v-model="rebindScheduleUuid"
@@ -99,7 +108,7 @@
       />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="rebindVisible = false">取消</n-button>
+          <n-button :disabled="actionLoading" @click="rebindVisible = false">取消</n-button>
           <n-button type="primary" :disabled="!rebindScheduleUuid || rebindScheduleUuid === actionTask?.schedule_uuid" :loading="actionLoading" @click="confirmRebind">确认换绑</n-button>
         </n-space>
       </template>
@@ -139,11 +148,12 @@
       </template>
     </n-modal>
     <ExecutionHistoryDialog v-model:show="historyVisible" :task="historyTask" />
-    <HiddenTasksDialog :auto-scroll="timelineAutoScroll" @update:auto-scroll="saveTimelineAutoScroll" :show-reference-lines="showReferenceLines" @update:show-reference-lines="saveReferenceLinesPreference" :show-current-time-line="showCurrentTimeLine" @update:show-current-time-line="saveCurrentTimeLinePreference" :show-hidden-tasks="showHiddenTasks" @update:show-hidden-tasks="saveHiddenTaskPreference" :show-run-status="showRunStatus" @update:show-run-status="saveRunStatusPreference" :show-task-names="showTaskNames" @update:show-task-names="saveTaskNamePreference" v-model:show="hiddenListVisible" :tasks="store.tasks.value" :saving="hiddenListSaving" @save="saveHiddenList" />
+    <HiddenTasksDialog :can-manage-hidden="Boolean(auth.user?.is_admin)" :auto-scroll="timelineAutoScroll" @update:auto-scroll="saveTimelineAutoScroll" :show-reference-lines="showReferenceLines" @update:show-reference-lines="saveReferenceLinesPreference" :show-current-time-line="showCurrentTimeLine" @update:show-current-time-line="saveCurrentTimeLinePreference" :show-hidden-tasks="showHiddenTasks" @update:show-hidden-tasks="saveHiddenTaskPreference" :show-run-status="showRunStatus" @update:show-run-status="saveRunStatusPreference" :show-task-names="showTaskNames" @update:show-task-names="saveTaskNamePreference" v-model:show="hiddenListVisible" :tasks="store.tasks.value" :saving="hiddenListSaving" @save="saveHiddenList" />
   </AppShell>
 </template>
 
 <script setup>
+import { taskRunIndicators } from '../../shared/taskRunIndicators.mjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NModal, NSelect, NSpace, NSpin, useDialog, useMessage } from 'naive-ui'
 import AppShell from '../components/AppShell.vue'
@@ -153,6 +163,7 @@ import HiddenTasksDialog from '../components/HiddenTasksDialog.vue'
 import GanttChart from '../components/GanttChart.vue'
 import SchedulePicker from '../components/SchedulePicker.vue'
 import TaskEditor from '../components/TaskEditor.vue'
+import TaskTransferDialog from '../components/TaskTransferDialog.vue'
 import TaskList from '../components/TaskList.vue'
 import TaskHistoryCard from '../components/TaskHistoryCard.vue'
 import ScheduleReconciliationDialog from '../components/ScheduleReconciliationDialog.vue'
@@ -166,14 +177,13 @@ import { useTimelineAutoScrollPreference, useTimelineNamePreference, useCurrentT
 import { useMachineColorPreference, applyMachineColors } from '../services/machineColorPreference.js'
 import { useHiddenTaskPreference } from '../services/hiddenTaskPreference.js'
 import {
-  exportTasks,
   getUsers,
   setTaskVisibility,
   saveTaskMutations,
-  importTasks,
   rebindTask,
   recoverTask,
   runTask,
+  syncAllTasks,
   syncTask,
   transferTask,
 } from '../services/taskService.js'
@@ -238,7 +248,15 @@ function handleReconcile() {
   }
 }
 const reconciliationVisible = ref(false), reconciliationRef = ref(null), syncCreateContext = ref(null), syncCreating = ref(false)
+const deletingReconciliationTask = ref(false)
+const returnToReconciliation = ref(false)
 const editorHasPreviewChanges = ref(false)
+watch(editorVisible, visible => {
+  if (!visible && returnToReconciliation.value) {
+    returnToReconciliation.value = false
+    reconciliationVisible.value = true
+  }
+})
 watch(editorVisible, visible => { editorHasPreviewChanges.value = false; if (!visible) syncCreateContext.value = null })
 const editorMode = ref('create')
 const editingTask = ref(null)
@@ -279,8 +297,23 @@ const filteredTasks = computed(() => filterTasks(store.tasks.value, {
   showHiddenTasks: showHiddenTasks.value,
 }))
 const { enabled: showRunStatus, save: saveRunStatusPreference } = useRunStatusPreference()
-const todayRunStatus = useTodayRunStatus(showRunStatus, filteredTasks)
-const todayRunStatusText = computed(() => showRunStatus.value ? formatTodayRunStatus(todayRunStatus.data.value, filteredTasks.value.length > 0) : formatDisabledRunStatus(planSyncStore.state.result))
+const refreshing = ref(false)
+const initialSyncDone = ref(false)
+const todayRunStatus = useTodayRunStatus(computed(() => showRunStatus.value && initialSyncDone.value), filteredTasks)
+const editorScheduledRunSummary = computed(() => {
+  const task = editingTask.value
+  const status = todayRunStatus.data.value
+  if (!editorVisible.value || editorMode.value !== 'edit' || !showRunStatus.value || !task?.schedule_uuid
+    || !status.tasks?.some(row => String(row.id) === String(task.id))) return ''
+  return taskRunIndicators(task, status)(undefined, Infinity).hint
+})
+let pageActive = true
+const todayRunStatusText = computed(() => {
+  if (refreshing.value) return '正在同步影刀运行数据…'
+  return showRunStatus.value
+    ? formatTodayRunStatus(todayRunStatus.data.value, filteredTasks.value.length > 0)
+    : formatDisabledRunStatus(planSyncStore.state.result)
+})
 const projectedTasks = computed(() => applyMachineColors(filterTasks(projectSharedTasks(filteredTasks.value), {
   selectedBots: selectedBots.value, sortBy: sortBy.value, preserveDecoration: true,
 }), customMachineColors.value))
@@ -309,10 +342,13 @@ onMounted(async () => {
     message.error(`任务加载失败：${error.message}`)
   }
   getUsers().then(result => { users.value = result }).catch(() => {})
+  if (!pageActive) return
   refreshTimer = window.setInterval(pollTasks, refreshSeconds * 1000)
+  void refreshFromYingdao({ manual: false })
 })
 
 onBeforeUnmount(() => {
+  pageActive = false
   layoutObserver?.disconnect()
   window.clearInterval(refreshTimer)
   window.removeEventListener('beforeunload', warnBeforeRefresh)
@@ -328,7 +364,7 @@ function warnBeforeRefresh(event) {
 }
 
 function pollTasks() {
-  if (store.state.loading || store.state.saving) return
+  if (refreshing.value || store.state.loading || store.state.saving) return
   store.load({ preserveDraft: true, silent: true }).catch(() => {})
 }
 
@@ -428,12 +464,21 @@ function confirmRun(task) {
 }
 
 async function confirmRebind() {
+  if (actionLoading.value) return
+  const taskId = String(actionTask.value.id), nextUuid = rebindScheduleUuid.value, version = actionTask.value.version
   actionLoading.value = true
   try {
-    await rebindTask(actionTask.value.id, rebindScheduleUuid.value, actionTask.value.version)
+    const result = await rebindTask(taskId, nextUuid, version)
     rebindVisible.value = false
+    if (editorVisible.value && String(editingTask.value?.id) === taskId && result.task) editingTask.value = result.task
     message.success('计划换绑成功')
-    await store.load({ preserveDraft: true, silent: true })
+    try {
+      await store.load({ preserveDraft: true, silent: true })
+      if (editorVisible.value && String(editingTask.value?.id) === taskId) {
+        const task = store.tasks.value.find(task => String(task.id) === taskId)
+        if (task && task.schedule_uuid === nextUuid && (!result.task || Number(task.version) >= Number(result.task.version))) editingTask.value = { ...task, tags: [...(task.tags || [])] }
+      }
+    } catch (error) { message.warning(`换绑已保存，但列表刷新失败：${error.message}`) }
   } catch (error) {
     actionError('换绑失败', error)
   } finally {
@@ -479,6 +524,45 @@ function handleGanttUpdate({ id, start, finish }) {
   else notifyPreview()
 }
 
+function resolveReconciliationTask(row) {
+  const id = String(row.task_id || '')
+  const task = store.state.savedTasks?.[id]
+  return task?.schedule_uuid === row.schedule_uuid ? task : null
+}
+
+function openReconciliationTask(row) {
+  const task = resolveReconciliationTask(row)
+  if (!task?.can_edit || historyTaskHasDraft(task.id)) return
+  returnToReconciliation.value = true
+  reconciliationVisible.value = false
+  openEdit(task)
+}
+
+function confirmReconciliationDelete(row) {
+  const task = resolveReconciliationTask(row)
+  if (!task?.can_edit || deletingReconciliationTask.value || historyTaskHasDraft(task.id)) return
+  const { id, version } = task
+  dialog.warning({
+    title: '删除本地任务',
+    content: `将从甘特图删除“${task.task}”。此操作仅删除本地任务。操作记录会保留，还原时需要重新校验原影刀计划能否绑定。`,
+    positiveText: '删除', negativeText: '取消',
+    onPositiveClick: async () => {
+      const current = resolveReconciliationTask(row)
+      if (!current?.can_edit || current.version !== version || historyTaskHasDraft(id) || deletingReconciliationTask.value) {
+        message.warning('任务状态已变化，请刷新后再试')
+        return
+      }
+      deletingReconciliationTask.value = true
+      try {
+        await saveTaskMutations([{ type: 'delete', id: String(id), version }])
+        message.success('本地任务已删除')
+        await refreshAfterPlanSync({ affected_ids: [id] }, { silent: false })
+      } catch (error) { message.error(`删除失败：${error.message}`) }
+      finally { deletingReconciliationTask.value = false }
+    },
+  })
+}
+
 function openSyncCreate(context) {
   syncCreateContext.value = context
   editorMode.value = 'create'
@@ -486,9 +570,9 @@ function openSyncCreate(context) {
   editorVisible.value = true
 }
 
-async function refreshAfterPlanSync(result) {
+async function refreshAfterPlanSync(result, { silent = true } = {}) {
   try {
-    await store.load({ preserveDraft: true, silent: true })
+    await store.load({ preserveDraft: true, silent })
     for (const id of result.affected_ids || []) store.clearPreview?.(id)
     if (myTaskStore.state.loaded) await myTaskStore.load({ preserveDraft: true, silent: true })
   } catch (error) { message.error(`本地同步已完成，但页面刷新失败：${error.message}`) }
@@ -563,34 +647,62 @@ function confirmDelete(task) {
   })
 }
 
-function confirmRefresh() {
-  if (!store.hasPreviews?.value && !editorHasPreviewChanges.value) return store.load({ preserveDraft: false }).then(() => message.success('数据已刷新')).catch(error => message.error(error.message))
-  dialog.warning({
-    title: '清除预览调整？',
-    content: '刷新将清除未保存的预览调整，重新读取本地数据库；已保存到本地的任务和修改会保留。',
-    positiveText: '清除并刷新', negativeText: '取消',
-    onPositiveClick: () => store.load({ preserveDraft: false }).then(() => { editorVisible.value = false; editorHasPreviewChanges.value = false; message.success('已清除预览并刷新') }).catch(error => message.error(error.message)),
-  })
-}
-
-async function handleImport(file) {
+async function refreshFromYingdao({ manual }) {
+  if (refreshing.value) return
+  refreshing.value = true
   try {
-    const content = await file.text()
-    const format = file.name.toLowerCase().endsWith('.json') ? 'json' : 'csv'
-    const result = await importTasks(content, format)
-    await store.load({ preserveDraft: true, silent: true })
-    message.success(result.message || '导入完成')
+    let syncError
+    try { await syncAllTasks() } catch (error) { syncError = error }
+    if (!pageActive) return
+    await store.load({ preserveDraft: !manual })
+    if (!pageActive) return
+    if (manual) {
+      editorVisible.value = false
+      editorHasPreviewChanges.value = false
+      await todayRunStatus.refreshNow()
+    }
+    if (!pageActive) return
+    if (syncError) message.warning(`影刀同步失败，已读取本地数据：${syncError.message}`)
+    else if (manual) message.success(todayRunStatus.error.value && showRunStatus.value
+      ? '任务列表已同步，今日运行状态稍后会自动重试' : '影刀数据已同步并刷新')
   } catch (error) {
-    message.error(`导入失败：${error.message}`)
+    if (pageActive) message.error(`刷新任务失败：${error.message}`)
+  } finally {
+    if (pageActive) initialSyncDone.value = true
+    refreshing.value = false
   }
 }
 
-async function handleExport(format) {
+function confirmRefresh() {
+  if (refreshing.value) return
+  if (!store.hasPreviews?.value && !editorHasPreviewChanges.value) return refreshFromYingdao({ manual: true })
+  dialog.warning({
+    title: '清除预览调整？',
+    content: '刷新会同步影刀运行数据并清除未保存的预览调整。已保存的任务和修改会保留。',
+    positiveText: '清除并刷新', negativeText: '取消',
+    onPositiveClick: () => refreshFromYingdao({ manual: true }),
+  })
+}
+
+const transferDialogVisible = ref(false)
+const transferDialogMode = ref('import')
+const savedExportTasks = computed(() => Object.values(store.state.savedTasks || {}))
+
+function openTransferDialog(mode) {
+  transferDialogMode.value = mode
+  transferDialogVisible.value = true
+}
+
+async function handleTransferComplete(result) {
+  if (result.mode === 'export') {
+    message.success(`已导出 ${result.count} 条任务（${result.format.toUpperCase()}）`)
+    return
+  }
+  message.success(result.message || `已导入 ${result.count} 条任务`)
   try {
-    await exportTasks(format)
-    message.success(`已导出 ${format.toUpperCase()} 文件`)
+    await store.load({ preserveDraft: true })
   } catch (error) {
-    message.error(`导出失败：${error.message}`)
+    message.warning(`导入已完成，但任务列表刷新失败：${error.message}`)
   }
 }
 </script>

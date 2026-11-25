@@ -59,6 +59,8 @@
     </n-spin>
 
     <TaskEditor
+      :can-manage-hidden="Boolean(auth.user?.is_admin)"
+      :saving="rebindVisible && actionLoading"
       v-model:show="editorVisible"
       :mode="editorMode"
       :task="editingTask"
@@ -68,9 +70,10 @@
       @submit="handleEditorSubmit"
       @delete="handleEditorDelete"
       @hidden="handleTaskHidden"
+      @rebind="task => handleMore('rebind', task)"
     />
 
-    <n-modal v-model:show="rebindVisible" preset="card" title="换绑影刀计划" class="responsive-modal compact-modal">
+    <n-modal v-model:show="rebindVisible" preset="card" title="换绑影刀计划" class="responsive-modal compact-modal" :mask-closable="!actionLoading" :closable="!actionLoading" :close-on-esc="!actionLoading">
       <p class="dialog-description">换绑后，旧计划的执行历史仍保留在任务下；新绑定只接收绑定时间之后的记录。</p>
       <SchedulePicker
         v-model="rebindScheduleUuid"
@@ -79,7 +82,7 @@
       />
       <template #footer>
         <n-space justify="end">
-          <n-button @click="rebindVisible = false">取消</n-button>
+          <n-button :disabled="actionLoading" @click="rebindVisible = false">取消</n-button>
           <n-button
             type="primary"
             :disabled="!rebindScheduleUuid || rebindScheduleUuid === actionTask?.schedule_uuid"
@@ -377,12 +380,21 @@ function confirmRun(task) {
 }
 
 async function confirmRebind() {
+  if (actionLoading.value) return
+  const taskId = String(actionTask.value.id), nextUuid = rebindScheduleUuid.value, version = actionTask.value.version
   actionLoading.value = true
   try {
-    await rebindTask(actionTask.value.id, rebindScheduleUuid.value, actionTask.value.version)
+    const result = await rebindTask(taskId, nextUuid, version)
     rebindVisible.value = false
+    if (editorVisible.value && String(editingTask.value?.id) === taskId && result.task) editingTask.value = result.task
     message.success('计划换绑成功')
-    await store.load({ preserveDraft: true, silent: true })
+    try {
+      await store.load({ preserveDraft: true, silent: true })
+      if (editorVisible.value && String(editingTask.value?.id) === taskId) {
+        const task = store.tasks.value.find(task => String(task.id) === taskId)
+        if (task && task.schedule_uuid === nextUuid && (!result.task || Number(task.version) >= Number(result.task.version))) editingTask.value = { ...task, tags: [...(task.tags || [])] }
+      }
+    } catch (error) { message.warning(`换绑已保存，但列表刷新失败：${error.message}`) }
   } catch (error) {
     message.error(`换绑失败：${error.message}`)
   } finally {

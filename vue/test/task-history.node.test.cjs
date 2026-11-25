@@ -218,37 +218,61 @@ function visibilityHarness(options = {}) {
   Object.assign(h.state().histories.get('10'), { before_snapshot: before, after_snapshot: { ...before, is_hidden: true } });
   return h;
 }
-test('全员可以还原隐藏状态，保留后来修改的配置、所有者、绑定与版本，不请求影刀', async () => {
+test('仅管理员可以还原隐藏状态，保留后来修改的配置、所有者、绑定与版本，不请求影刀', async () => {
   const h = visibilityHarness();
   const current = structuredClone(h.state().tasks.get('1'));
   const other = structuredClone(h.state().tasks.get('2'));
-  const preview = await h.service.preview('99', '10');
+  const preview = await h.service.preview({ userId: '99', isAdmin: true }, '10');
   assert.equal(preview.visibility_only, true);
   assert.deepEqual(preview.changes, ['is_hidden']);
-  await h.service.restore('99', '10', 4);
+  await h.service.restore({ userId: '99', isAdmin: true }, '10', 4);
   assert.deepEqual(h.state().tasks.get('1'), { ...current, is_hidden: false });
   assert.deepEqual(h.state().tasks.get('2'), other);
   assert.equal(h.remoteChecks(), 0);
   assert.equal(h.state().histories.get('100').before_snapshot.operation_scope, 'visibility');
-  await assert.rejects(h.service.restore('99', '10', 4), { code: 'HISTORY_ALREADY_RESTORED' });
+  await assert.rejects(h.service.restore({ userId: '99', isAdmin: true }, '10', 4), { code: 'HISTORY_ALREADY_RESTORED' });
   // Restoring the restore changes only visibility again.
-  await h.service.restore('98', '100', 4);
+  await h.service.restore({ userId: '98', isAdmin: true }, '100', 4);
   assert.deepEqual(h.state().tasks.get('1'), current);
 });
 test('隐藏记录还原失败整笔回滚；伪装为隐藏操作的配置变更仍检查所有权', async () => {
   const h = visibilityHarness({ failHistory: true });
-  await assert.rejects(h.service.restore('99', '10', 4));
+  await assert.rejects(h.service.restore({ userId: '99', isAdmin: true }, '10', 4));
   assert.equal(h.state().tasks.get('1').is_hidden, true);
   assert.equal(h.state().histories.get('10').reverted_by_audit_id, null);
   const forged = visibilityHarness();
   forged.state().histories.get('10').after_snapshot.task = 'changed';
   await assert.rejects(forged.service.preview('99', '10'), { status: 403 });
   const deleted = visibilityHarness({ current: { deleted_at: new Date() } });
-  await assert.rejects(deleted.service.preview('99', '10'), { code: 'TASK_DELETED' });
+  await assert.rejects(deleted.service.preview({ userId: '99', isAdmin: true }, '10'), { code: 'TASK_DELETED' });
 });
 test('旧快照未包含隐藏标志时，还原配置保留当前隐藏选择', async () => {
   const h = harness({ current: { is_hidden: true } });
   delete h.state().histories.get('10').before_snapshot.is_hidden;
   await h.service.restore('8', '10', 4);
   assert.equal(h.state().tasks.get('1').is_hidden, true);
+});
+
+test('普通任务所有者不可预览或还原隐藏记录，普通配置还原不能间接改变隐藏标志', async () => {
+  const h = visibilityHarness();
+  await assert.rejects(h.service.preview('8', '10'), { code: 'ADMIN_REQUIRED' });
+  await assert.rejects(h.service.restore('8', '10', 4), { code: 'ADMIN_REQUIRED' });
+  assert.equal(h.state().tasks.get('1').is_hidden, true);
+  const normal = harness({ current: { is_hidden: true } });
+  const preview = await normal.service.preview('8', '10');
+  assert.equal(preview.target.is_hidden, true);
+  await normal.service.restore('8', '10', 4);
+  assert.equal(normal.state().tasks.get('1').is_hidden, true);
+  assert.equal(normal.state().tasks.get('1').task, '原任务');
+});
+
+test('隐藏记录列表不给普通所有者还原按钮，管理员保留还原能力', async () => {
+  const h = visibilityHarness();
+  const row = { ...h.state().histories.get('10'), current_owner_id: '8', current_deleted_at: null };
+  const repository = createTaskHistoryRepository({ query: async sql => sql.includes('COUNT(*)')
+    ? { rows: [{ retained_count: 1, today_count: 1 }] } : { rows: [row] } });
+  const user = await repository.list({ userId: '8', isAdmin: false }, { limit: 10 });
+  const admin = await repository.list({ userId: '99', isAdmin: true }, { limit: 10 });
+  assert.equal(user.records[0].can_restore, false);
+  assert.equal(admin.records[0].can_restore, true);
 });

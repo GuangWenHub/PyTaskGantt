@@ -81,13 +81,18 @@ export async function saveTaskMutations(mutations) {
   }
 }
 
-export async function importTasks(content, format) {
-  return apiRequest('/import', { method: 'POST', body: { content, format } })
+export function previewTaskImport(content, format) {
+  return apiRequest('/import/preview', { method: 'POST', body: { content, format } })
 }
 
-export function exportTasks(format) {
+export function importTasks(content, format, indices) {
+  return apiRequest('/import', { method: 'POST', body: { content, format, indices } })
+}
+
+export function exportTasks(format, taskIds) {
   const suffix = format === 'json' ? 'json' : 'csv'
-  return downloadFromApi(`/export/${suffix}`, `tasks_${new Date().toISOString().slice(0, 10)}.${suffix}`)
+  return downloadFromApi(`/export/${suffix}`, `tasks_${new Date().toISOString().slice(0, 10)}.${suffix}`,
+    taskIds === undefined ? undefined : { body: { task_ids: taskIds } })
 }
 
 export function rebindTask(taskId, scheduleUuid, version) {
@@ -111,12 +116,18 @@ export function recoverTask(taskId, ownerUserId, scheduleUuid, version) {
   })
 }
 
-export function runTask(taskId) {
-  return apiRequest(`/tasks/${encodeURIComponent(taskId)}/run`, { method: 'POST', body: {} })
+export function runTask(taskId, expectedScheduleUuid) {
+  return apiRequest(`/tasks/${encodeURIComponent(taskId)}/run`, {
+    method: 'POST', body: { expected_schedule_uuid: expectedScheduleUuid },
+  })
 }
 
 export function syncTask(taskId) {
   return apiRequest(`/tasks/${encodeURIComponent(taskId)}/sync`, { method: 'POST', body: {} })
+}
+
+export function syncAllTasks() {
+  return apiRequest('/tasks/sync', { method: 'POST' })
 }
 
 export function syncMyTasks() {

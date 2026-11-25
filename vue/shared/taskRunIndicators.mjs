@@ -1,12 +1,19 @@
 import { parseYingdaoCron } from './yingdaoCron.mjs'
 import { RUN_STATUS_COLORS as colors } from './runStatusColors.mjs'
+function slotTime(value) {
+  const hours = Math.floor(value / 3600)
+  const minutes = Math.floor(value / 60) % 60
+  const remainder = value % 60
+  const parts = remainder ? [hours, minutes, remainder] : [hours, minutes]
+  return parts.map(part => String(part).padStart(2, '0')).join(':')
+}
 const seconds = value => String(value || '00:00:00').split(':').reduce((n, part) => n * 60 + Number(part), 0)
 function bucket(slots, value) {
   let lo = 0, hi = slots.length
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (slots[mid] <= value) lo = mid + 1; else hi = mid }
   return lo - 1
 }
-function stateOf(status) {
+export function stateOf(status) {
   if (status === '运行成功') return 'success'
   if (['运行中', '等待中'].includes(status)) return 'active'
   if (['运行失败', '运行超时', '等待超时', '已停止'].includes(status)) return 'error'
@@ -28,7 +35,7 @@ export function taskRunIndicators(task, payload = {}) {
     .sort((a, b) => Date.parse(a.trigger_time) - Date.parse(b.trigger_time) || Date.parse(a.updated_time || a.trigger_time) - Date.parse(b.updated_time || b.trigger_time))
   if (!note && Number.isFinite(dayStart)) for (const record of records) {
     const time = Date.parse(record.trigger_time), second = Math.floor((time - dayStart) / 1000)
-    if (second < 0 || second >= 86400) continue
+    if (!Number.isFinite(second) || second < 0 || second >= 86400) continue
     const index = task.timing_mode === 'cron' ? bucket(slots, second) : 0
     if (task.shared_candidate && !record.client_ids?.includes(String(task.candidate_client?.id))) {
       if (!record.client_ids?.length && index >= 0) unknownMachineSlots.add(slots[index])
@@ -47,6 +54,8 @@ export function taskRunIndicators(task, payload = {}) {
     if (!states.length) states.push({ state: 'unknown', label: note || '无法匹配该触发时刻' })
     const counts = states.reduce((result, value) => { result[value.label] = (result[value.label] || 0) + 1; return result }, {})
     const gradient = states.map((value, index) => `${colors[value.state]} ${index / states.length * 100}% ${(index + 1) / states.length * 100}%`).join(',')
-    return { background: `linear-gradient(to right, ${gradient})`, hint: `${payload.date || '今日'}：${Object.entries(counts).map(([label, count]) => `${label}${states.length > 1 ? ` ${count} 次` : ''}`).join('，')}${pendingNote && records.length ? `；${pendingNote}` : ''}` }
+    const timing = selected.length === 1 && Number.isFinite(selected[0]) ? ` ${slotTime(selected[0])}` : ''
+    const summary = `定时触发${timing} · ${Object.entries(counts).map(([label, count]) => `${label}${states.length > 1 ? ` ${count} 次` : ''}`).join('，')}${pendingNote && records.length ? `；${pendingNote}` : ''}`
+    return { background: `linear-gradient(to right, ${gradient})`, hint: `${payload.date || '今日'} ${summary}` }
   }
 }

@@ -23,8 +23,11 @@
 
       <n-form-item v-else label="当前影刀计划">
         <div class="current-binding">
-          <div class="binding-identity"><code>{{ form.schedule_uuid || '未绑定，仅可只读展示' }}</code><span v-if="form.schedule_uuid">{{ form.schedule_name || '名称暂未获取' }}</span></div>
-          <small v-if="form.schedule_uuid">如需更换计划，请在“我的任务”页面使用“换绑”。</small>
+          <div class="binding-details">
+            <div class="binding-identity"><code>{{ form.schedule_uuid || '未绑定，仅可只读展示' }}</code><span v-if="form.schedule_uuid">{{ form.schedule_name || '名称暂未获取' }}</span></div>
+            <small v-if="form.schedule_uuid">换绑会正式保存到本地数据库；旧计划的执行历史保留，新计划按换绑时间关联运行记录。</small>
+          </div>
+          <n-button v-if="canRebindTask" class="binding-action" size="tiny" quaternary :disabled="saving || hiding || cronLoading" @click="requestRebind">换绑</n-button>
         </div>
       </n-form-item>
 
@@ -32,7 +35,7 @@
       <n-alert v-if="metadataError" type="warning" class="editor-alert">{{ metadataError }}</n-alert>
 
       <n-form-item label="任务名称" path="task">
-        <n-input v-model:value="form.task" placeholder="例如：登录系统" maxlength="100" show-count />
+        <n-input v-model:value="form.task" placeholder="例如：登录系统" maxlength="100" show-count @update:value="notifyPreviewEdit" />
       </n-form-item>
 
       <n-form-item :label="botLabel" path="bot">
@@ -51,38 +54,58 @@
       </n-form-item>
 
       <n-form-item label="标签">
-        <n-select v-model:value="form.tags" :options="tagOptions" :render-label="renderTagLabel" placeholder="自动识别周期，也可手动修改" filterable multiple tag />
+        <n-select v-model:value="form.tags" :options="tagOptions" :render-label="renderTagLabel" placeholder="自动识别周期，也可手动修改" filterable multiple tag @update:value="notifyPreviewEdit" />
       </n-form-item>
-      <section v-if="form.timing_mode === 'cron'" class="task-mode-settings task-mode-panel" aria-label="循环任务设置">
-        <div class="task-mode-panel-heading"><span class="recurring-label">🔁 循环任务</span></div>
-        <n-form-item label="耗时">
-          <DurationPicker :value="form.expected_duration_seconds" :min="1" :max="86400" :disabled="cronLoading" @update:value="updateDuration" />
-        </n-form-item>
-        <n-form-item :label="previewOnly ? '循环规则（仅预览）' : '影刀循环规则（只读）'">
-          <div class="cron-preview">
-            <n-input v-model:value="cronExpression" :readonly="!previewOnly" aria-label="影刀循环规则" :placeholder="cronLoading ? '正在读取…' : '请先绑定有循环规则的影刀计划'" @update:value="cronEdited = true; notifyPreviewEdit()" />
-            <div v-if="cronExpression">{{ cronSummary }}</div>
+      <section class="task-mode-panel" :class="{ 'task-mode-settings': form.timing_mode === 'cron' }"
+        :aria-label="form.timing_mode === 'cron' ? '循环任务设置' : '常规任务设置'">
+        <template v-if="form.timing_mode === 'cron'">
+          <div class="task-mode-panel-heading"><span class="recurring-label">🔁 循环任务</span></div>
+          <n-form-item label="耗时">
+            <DurationPicker :value="form.expected_duration_seconds" :min="1" :max="86400" :disabled="cronLoading" @update:value="updateDuration" />
+          </n-form-item>
+          <n-form-item :label="previewOnly ? '循环规则（仅预览）' : '影刀循环规则（只读）'">
+            <div class="cron-preview">
+              <n-input v-model:value="cronExpression" :readonly="!previewOnly" aria-label="影刀循环规则" :placeholder="cronLoading ? '正在读取…' : '请先绑定有循环规则的影刀计划'" @update:value="cronEdited = true; notifyPreviewEdit()" />
+              <div v-if="cronExpression">{{ cronSummary }}</div>
+            </div>
+          </n-form-item>
+          <n-form-item v-if="cronTimes.length" label="触发时刻">
+            <div class="cron-times" role="region" aria-label="全部触发时刻" tabindex="0"><span v-for="time in cronTimes" :key="time">{{ time }}</span></div>
+          </n-form-item>
+          <p class="task-mode-hint">规则来自影刀计划，统一展示每日时间模板。</p>
+          <n-alert v-if="cronError" type="warning" class="editor-alert">{{ cronError }}</n-alert>
+        </template>
+        <template v-else>
+          <div class="task-time-row">
+            <n-form-item class="task-time-field" label="开始时间" path="start">
+              <ClockTimePicker :value="form.start" :disabled="cronLoading || persisting" label="开始时间" @edit="notifyPreviewEdit" @update:value="updateStart" />
+            </n-form-item>
+            <n-form-item class="task-time-duration" label="耗时" :show-feedback="false">
+              <DurationPicker :value="durationSeconds" :min="1" :disabled="cronLoading || !form.start" @update:value="updateDuration" />
+            </n-form-item>
+            <n-form-item class="task-time-field" label="结束时间" path="finish">
+              <ClockTimePicker :value="form.finish" label="结束时间" @edit="notifyPreviewEdit" @update:value="updateFinish" />
+            </n-form-item>
           </div>
-        </n-form-item>
-        <n-form-item v-if="cronTimes.length" label="触发时刻">
-          <div class="cron-times" role="region" aria-label="全部触发时刻" tabindex="0"><span v-for="time in cronTimes" :key="time">{{ time }}</span></div>
-        </n-form-item>
-        <p class="task-mode-hint">规则来自影刀计划，统一展示每日时间模板。</p>
-        <n-alert v-if="cronError" type="warning" class="editor-alert">{{ cronError }}</n-alert>
-      </section>
-      <section v-else class="task-mode-panel" aria-label="常规任务设置">
-        <div class="task-time-row">
-          <n-form-item class="task-time-field" label="开始时间" path="start">
-            <ClockTimePicker :value="form.start" :disabled="cronLoading || persisting" label="开始时间" @edit="notifyPreviewEdit" @update:value="updateStart" />
-          </n-form-item>
-          <n-form-item class="task-time-duration" label="耗时" :show-feedback="false">
-            <DurationPicker :value="durationSeconds" :min="1" :disabled="cronLoading || !form.start" @update:value="updateDuration" />
-          </n-form-item>
-          <n-form-item class="task-time-field" label="结束时间" path="finish">
-            <ClockTimePicker :value="form.finish" label="结束时间" @edit="notifyPreviewEdit" @update:value="updateFinish" />
-          </n-form-item>
-        </div>
-        <n-alert v-if="isCrossDayTask" type="info" :show-icon="true" class="editor-alert">已识别为跨天任务</n-alert>
+          <n-alert v-if="isCrossDayTask" type="info" :show-icon="true" class="editor-alert">已识别为跨天任务</n-alert>
+        </template>
+        <dl v-if="mode === 'edit' && form.schedule_uuid" class="task-time-limits">
+          <div>
+            <dt>最大等待时间</dt>
+            <dd>{{ timeoutLabel(timeoutLimits?.wait_seconds) }}</dd>
+          </div>
+          <div>
+            <dt>最大执行时间</dt>
+            <dd v-if="timeoutLimits?.execution?.length > 1">
+              <ul>
+                <li v-for="(application, index) in timeoutLimits.execution" :key="index">
+                  {{ application.name || `应用 ${index + 1}` }} · {{ timeoutLabel(application.seconds) }}
+                </li>
+              </ul>
+            </dd>
+            <dd v-else>{{ timeoutLabel(timeoutLimits?.execution?.[0]?.seconds) }}</dd>
+          </div>
+        </dl>
       </section>
 
       <n-alert v-if="persisting && !runsLoading && !usableHistoricalDuration && !durationEdited" type="warning" class="editor-alert">{{ runsError || recentRuns?.incomplete ? '运行记录读取或核验失败，请重试，或用滑条、输入框手动确认耗时后再新增。' : '没有可用的历史耗时，请用滑条或输入框手动确认耗时后再新增。' }}</n-alert>
@@ -90,6 +113,7 @@
       <n-form-item label="备注">
         <n-input
           v-model:value="form.note"
+          @update:value="notifyPreviewEdit"
           type="textarea"
           :autosize="{ minRows: 2, maxRows: 4 }"
           maxlength="2000"
@@ -97,7 +121,9 @@
           placeholder="补充运行说明、交接信息或注意事项"
         />
       </n-form-item>
-      <RecentScheduleRuns :result="recentRuns" :loading="runsLoading" :error="runsError" :bound="Boolean(form.schedule_uuid)" />
+      <RecentScheduleRuns :result="recentRuns" :loading="runsLoading" :error="runsError" :bound="Boolean(form.schedule_uuid)"
+        :scheduled-run-summary="scheduledRunSummary" :can-retry="canRebindTask" :retrying="retrying" :retry-accepted="retryAccepted"
+        :retry-disabled="saving || hiding" @retry="confirmRetryRun" />
     </n-form>
 
     <template #footer>
@@ -112,7 +138,7 @@
           <n-button v-if="!persisting" :type="canSaveLocal ? 'default' : 'primary'" :disabled="saving || hiding || cronLoading || (mode === 'create' && Boolean(metadataError))" @click="onSubmit()">
             {{ previewOnly ? '应用到预览' : mode === 'create' ? '加入待保存草稿' : '保存到草稿' }}
           </n-button>
-          <n-button v-if="canSaveLocal" type="primary" :loading="saving" :disabled="saving || hiding || cronLoading || Boolean(metadataError)" @click="onSubmit(true)">保存到本地</n-button>
+          <n-button v-if="canSaveLocal" type="primary" :loading="saving" :disabled="saving || hiding || cronLoading || (mode === 'create' && Boolean(metadataError))" @click="onSubmit(true)">保存到本地</n-button>
         </n-space>
       </div>
     </template>
@@ -134,16 +160,18 @@ import {
   useMessage,
 } from 'naive-ui'
 import SchedulePicker from './SchedulePicker.vue'
-import { setTaskVisibility } from '../services/taskService.js'
+import { runTask, setTaskVisibility } from '../services/taskService.js'
 import RecentScheduleRuns from './RecentScheduleRuns.vue'
 import DurationPicker from './DurationPicker.vue'
 import ClockTimePicker from './ClockTimePicker.vue'
 import { getTaskFrequencyBadge, isCrossDay, normalizeTime } from '../services/dataService.js'
 import { getScheduleEditor, getScheduleRecentRuns } from '../services/yingdaoService.js'
-import { elapsedBetween, suggestedFinish } from '../../shared/scheduleAutofill.mjs'
+import { elapsedBetween, formatElapsedTime, suggestedFinish } from '../../shared/scheduleAutofill.mjs'
 import { cronTemplateSummary, parseYingdaoCron } from '../../shared/yingdaoCron.mjs'
 
 const props = defineProps({
+  canManageHidden: Boolean,
+  scheduledRunSummary: { type: String, default: '' },
   persisting: { type: Boolean, default: false },
   allowLocalSave: { type: Boolean, default: false },
   saving: { type: Boolean, default: false },
@@ -155,12 +183,20 @@ const props = defineProps({
   allTags: { type: Array, default: () => [] },
   reservedScheduleUuids: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:show', 'submit', 'delete', 'preview-change', 'hidden', 'save-local'])
+const emit = defineEmits(['update:show', 'submit', 'delete', 'preview-change', 'hidden', 'save-local', 'rebind'])
 const message = useMessage()
 const dialog = useDialog()
 const hiding = ref(false)
+const hasUserEdits = ref(false)
+const canRebindTask = computed(() => props.mode === 'edit' && props.task?.can_edit === true
+  && /^[1-9]\d*$/.test(String(props.task.id || '')) && Boolean(props.task.schedule_uuid))
+function requestRebind() {
+  if (!canRebindTask.value || props.saving || hiding.value || cronLoading.value) return
+  if (hasUserEdits.value) return message.warning('当前编辑内容尚未保存，请先保存或取消编辑后重新打开，再换绑计划。')
+  emit('rebind', props.task)
+}
 const canSaveLocal = computed(() => props.allowLocalSave && Boolean(form.schedule_uuid) && (props.mode === 'create' || /^[1-9]\d*$/.test(String(form.id || ''))))
-const canHideTask = computed(() => props.mode === 'edit' && /^[1-9]\d*$/.test(String(props.task?.id || '')))
+const canHideTask = computed(() => props.canManageHidden && props.mode === 'edit' && /^[1-9]\d*$/.test(String(props.task?.id || '')))
 function confirmHide() {
   if (!canHideTask.value || props.task.is_hidden || hiding.value || props.saving) return
   const id = String(props.task.id)
@@ -169,7 +205,7 @@ function confirmHide() {
     content: `是否隐藏任务“${props.task.task}”？可在甘特图标题栏的“设置”中移出隐藏名单，恢复显示。隐藏仅影响显示，不会保存当前弹窗中尚未应用的修改，也不影响影刀计划执行。`,
     positiveText: '确认隐藏', negativeText: '取消',
     onPositiveClick: async () => {
-      if (hiding.value) return false
+      if (!canHideTask.value || hiding.value || props.saving) return false
       hiding.value = true
       try {
         await setTaskVisibility([{ id, expected_hidden: false, is_hidden: true }])
@@ -229,6 +265,7 @@ let previewNotified = false
 let previewToast = null
 function clearPreviewNotice() { previewToast?.destroy?.(); previewToast = null }
 function notifyPreviewEdit() {
+  hasUserEdits.value = true
   if (!props.previewOnly || previewNotified) return
   previewNotified = true
   emit('preview-change')
@@ -263,6 +300,7 @@ const cronTimes = computed(() => {
 watch(() => [props.show, props.task], () => {
   if (!props.show) { clearPreviewNotice(); return }
   previewNotified = false
+  hasUserEdits.value = false
   machinesEdited.value = false
   startEdited.value = false
   cronEdited.value = false
@@ -285,12 +323,50 @@ watch(() => [props.show, props.task], () => {
 
 const metadataError = ref('')
 const recentRuns = ref(null)
+const retrying = ref(false)
+const acceptedRetry = ref('')
+const retryKey = computed(() => JSON.stringify([form.id, form.schedule_uuid, recentRuns.value?.latest_run?.task_uuid]))
+const retryAccepted = computed(() => acceptedRetry.value === retryKey.value)
+
+function confirmRetryRun(run) {
+  if (!canRebindTask.value || props.saving || hiding.value || retrying.value || retryAccepted.value) return
+  const key = retryKey.value
+  const taskId = form.id
+  const scheduleUuid = form.schedule_uuid
+  dialog.warning({
+    title: '重试运行',
+    content: `确认让影刀重新执行「${form.schedule_name || form.task}」当前绑定的计划？这会发起一次新的运行。`,
+    positiveText: '确认重试',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      if (!props.show || key !== retryKey.value || !canRebindTask.value || props.saving ||
+        hiding.value || retrying.value || retryAccepted.value || run.task_uuid !== recentRuns.value?.latest_run?.task_uuid) return false
+      retrying.value = true
+      try {
+        await runTask(taskId, scheduleUuid)
+        acceptedRetry.value = key
+        message.success('影刀已受理重试')
+      } catch (error) {
+        message.error(`重试未确认：${error.message}`)
+        return false
+      } finally {
+        retrying.value = false
+      }
+    },
+  })
+}
 const usableHistoricalDuration = computed(() => {
   const seconds = recentRuns.value?.rounded_duration_seconds
   return Number.isInteger(seconds) && seconds > 0 && seconds <= (form.timing_mode === 'cron' ? 86400 : 86399)
 })
 const runsLoading = ref(false)
 const runsError = ref('')
+const timeoutLimits = ref(null)
+function timeoutLabel(seconds) {
+  if (cronLoading.value) return '读取中…'
+  if (!timeoutLimits.value) return '未获取'
+  return seconds == null ? '未设置' : formatElapsedTime(seconds)
+}
 let requestId = 0
 
 function selectSchedule(schedule) {
@@ -301,6 +377,7 @@ function selectSchedule(schedule) {
 watch(() => [props.show, form.schedule_uuid], () => {
   const request = ++requestId
   recentRuns.value = null
+  timeoutLimits.value = null
   runsError.value = ''
   metadataError.value = ''
   cronError.value = ''
@@ -341,6 +418,7 @@ watch(() => [props.show, form.schedule_uuid], () => {
   getScheduleEditor(uuid).then(result => {
     if (!current()) return
     if (result.schedule_uuid !== uuid) throw new Error('影刀返回的计划与当前绑定不一致')
+    timeoutLimits.value = result.timeout_limits || null
     form.schedule_name = result.schedule_name || form.schedule_name
     if (isCreate && form.task === originalName) form.task = form.schedule_name
     if (!machinesEdited.value && !(props.previewOnly && props.task?._preview_modified)) dispatchInfo.value = result.dispatch || {}
@@ -445,6 +523,9 @@ function confirmDelete() {
 .hide-task-link { color: var(--muted, #888); font-size: 12px; }
 .hide-task-link:not(:disabled):hover { color: var(--ink, #555); }
 .binding-identity { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; overflow-wrap: anywhere; }
+.current-binding { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; }
+.binding-details { min-width: 0; }
+.binding-action { flex-shrink: 0; }
 .task-mode-settings { min-width: 0; margin-bottom: 18px; }
 .task-mode-panel { min-width: 0; padding: 14px; margin-bottom: 18px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--warm); }
 .task-mode-panel-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
@@ -452,6 +533,10 @@ function confirmDelete() {
 .task-mode-panel-heading small, .task-mode-hint { color: var(--muted); font-size: 12px; }
 .task-mode-hint { margin: 0; }
 .task-time-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.task-time-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.task-time-limits dt { color: var(--muted); font-size: 12px; }
+.task-time-limits dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.task-time-limits ul { padding: 0; margin: 0; list-style: none; }
 .task-time-field, .task-time-duration { min-width: 0; max-width: 100%; }
 .task-time-row :deep(.n-form-item-blank) { min-width: 0; width: 100%; }
 .task-time-field :deep(.clock-time-picker) { width: 100%; min-width: 0; }

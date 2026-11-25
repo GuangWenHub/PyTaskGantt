@@ -70,8 +70,13 @@ function createTaskHistoryService({ pool, historyRepository, scheduleDirectory }
     const target = restorationTarget(history, current);
     const visibilityOnly = isVisibilityHistory(history);
     if (visibilityOnly) {
+      if (!actor.isAdmin) throw new AdminRequiredError('仅管理员可还原隐藏状态');
       if (current.deleted_at) throw new ConflictError('TASK_DELETED', '任务已删除，不能调整隐藏状态');
-    } else assertRestorePermission(actor, current, target);
+    } else {
+      assertRestorePermission(actor, current, target);
+      // Normal task restoration cannot bypass the admin-only visibility endpoint.
+      if (!actor.isAdmin) target.is_hidden = Boolean(current.is_hidden);
+    }
     return { actor, history, current, target, visibilityOnly };
   }
 
